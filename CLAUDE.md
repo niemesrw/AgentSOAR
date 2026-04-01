@@ -5,6 +5,7 @@
 - Always create a PR after committing — never push directly to `main`.
 - Keep PRs small and focused (one logical change per PR).
 - Include the blog post update in the same PR as the code it documents.
+- Before pushing Python changes, run `ruff check && ruff format --check` (install via `brew install ruff`).
 
 ## Project Context
 

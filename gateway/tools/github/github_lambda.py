@@ -4,8 +4,9 @@
 import json
 import logging
 import os
-import urllib.request
 import urllib.error
+import urllib.request
+
 import boto3
 
 logger = logging.getLogger()
@@ -52,7 +53,9 @@ def _github_request(method: str, path: str, body: dict | None = None) -> dict:
         raise RuntimeError(f"GitHub API error {e.code}: {error_body}") from e
 
 
-def github_create_issue(owner: str, repo: str, title: str, body: str, labels: list[str] | None = None) -> str:
+def github_create_issue(
+    owner: str, repo: str, title: str, body: str, labels: list[str] | None = None
+) -> str:
     payload = {"title": title, "body": body}
     if labels:
         payload["labels"] = labels
@@ -60,7 +63,14 @@ def github_create_issue(owner: str, repo: str, title: str, body: str, labels: li
     return f"Created issue #{result['number']}: {result['html_url']}"
 
 
-def github_update_issue(owner: str, repo: str, issue_number: int, state: str | None = None, labels: list[str] | None = None, body: str | None = None) -> str:
+def github_update_issue(
+    owner: str,
+    repo: str,
+    issue_number: int,
+    state: str | None = None,
+    labels: list[str] | None = None,
+    body: str | None = None,
+) -> str:
     payload = {}
     if state:
         payload["state"] = state
@@ -68,27 +78,37 @@ def github_update_issue(owner: str, repo: str, issue_number: int, state: str | N
         payload["labels"] = labels
     if body:
         payload["body"] = body
-    result = _github_request("PATCH", f"/repos/{owner}/{repo}/issues/{issue_number}", payload)
+    result = _github_request(
+        "PATCH", f"/repos/{owner}/{repo}/issues/{issue_number}", payload
+    )
     return f"Updated issue #{result['number']}: {result['html_url']}"
 
 
 def github_add_comment(owner: str, repo: str, issue_number: int, body: str) -> str:
-    result = _github_request("POST", f"/repos/{owner}/{repo}/issues/{issue_number}/comments", {"body": body})
+    result = _github_request(
+        "POST", f"/repos/{owner}/{repo}/issues/{issue_number}/comments", {"body": body}
+    )
     return f"Added comment: {result['html_url']}"
 
 
-def github_list_issues(owner: str, repo: str, state: str = "open", labels: str = "") -> str:
+def github_list_issues(
+    owner: str, repo: str, state: str = "open", labels: str = ""
+) -> str:
     path = f"/repos/{owner}/{repo}/issues?state={state}&per_page=20"
     if labels:
         path += f"&labels={labels}"
     issues = _github_request("GET", path)
     if not issues:
         return "No issues found."
-    lines = [f"#{i['number']} [{i['state']}] {i['title']} — {i['html_url']}" for i in issues]
+    lines = [
+        f"#{i['number']} [{i['state']}] {i['title']} — {i['html_url']}" for i in issues
+    ]
     return "\n".join(lines)
 
 
-def github_create_pr(owner: str, repo: str, title: str, body: str, head: str, base: str) -> str:
+def github_create_pr(
+    owner: str, repo: str, title: str, body: str, head: str, base: str
+) -> str:
     payload = {"title": title, "body": body, "head": head, "base": base}
     result = _github_request("POST", f"/repos/{owner}/{repo}/pulls", payload)
     return f"Created PR #{result['number']}: {result['html_url']}"
@@ -96,13 +116,20 @@ def github_create_pr(owner: str, repo: str, title: str, body: str, head: str, ba
 
 def github_search_issues(query: str) -> str:
     import urllib.parse
+
     encoded = urllib.parse.quote(query)
     result = _github_request("GET", f"/search/issues?q={encoded}&per_page=10")
     items = result.get("items", [])
     if not items:
         return "No results found."
-    lines = [f"#{i['number']} {i['title']} ({i['repository_url'].split('repos/')[-1]}) — {i['html_url']}" for i in items]
-    return f"Found {result['total_count']} results (showing {len(items)}):\n" + "\n".join(lines)
+    lines = [
+        f"#{i['number']} {i['title']} ({i['repository_url'].split('repos/')[-1]}) — {i['html_url']}"
+        for i in items
+    ]
+    return (
+        f"Found {result['total_count']} results (showing {len(items)}):\n"
+        + "\n".join(lines)
+    )
 
 
 TOOL_HANDLERS = {
@@ -110,7 +137,12 @@ TOOL_HANDLERS = {
         e["owner"], e["repo"], e["title"], e["body"], e.get("labels")
     ),
     "github_update_issue": lambda e: github_update_issue(
-        e["owner"], e["repo"], e["issue_number"], e.get("state"), e.get("labels"), e.get("body")
+        e["owner"],
+        e["repo"],
+        e["issue_number"],
+        e.get("state"),
+        e.get("labels"),
+        e.get("body"),
     ),
     "github_add_comment": lambda e: github_add_comment(
         e["owner"], e["repo"], e["issue_number"], e["body"]
@@ -131,12 +163,16 @@ def handler(event, context):
     try:
         delimiter = "___"
         original_tool_name = context.client_context.custom["bedrockAgentCoreToolName"]
-        tool_name = original_tool_name[original_tool_name.index(delimiter) + len(delimiter):]
+        tool_name = original_tool_name[
+            original_tool_name.index(delimiter) + len(delimiter) :
+        ]
 
         logger.info(f"Processing tool: {tool_name}")
 
         if tool_name not in TOOL_HANDLERS:
-            return {"error": f"Unknown tool: {tool_name}. Supported: {list(TOOL_HANDLERS.keys())}"}
+            return {
+                "error": f"Unknown tool: {tool_name}. Supported: {list(TOOL_HANDLERS.keys())}"
+            }
 
         result = TOOL_HANDLERS[tool_name](event)
         return {"content": [{"type": "text", "text": result}]}
