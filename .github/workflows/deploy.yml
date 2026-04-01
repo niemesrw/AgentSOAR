@@ -49,22 +49,10 @@ jobs:
 
       - name: Patch config.yaml for this deployment
         run: |
-          cd infra-cdk
-          python3 - <<'EOF'
-          import yaml, sys
-
-          with open("config.yaml") as f:
-              config = yaml.safe_load(f)
-
-          config["stack_name_base"] = "${{ github.event.inputs.stack_name_base }}"
-          config["backend"]["pattern"] = "${{ github.event.inputs.pattern }}"
-
-          with open("config.yaml", "w") as f:
-              yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
-
-          print("config.yaml updated:")
-          print(yaml.dump(config))
-          EOF
+          sed -i "s/^stack_name_base:.*/stack_name_base: ${{ github.event.inputs.stack_name_base }}/" infra-cdk/config.yaml
+          sed -i "s/^  pattern:.*$/  pattern: ${{ github.event.inputs.pattern }}/" infra-cdk/config.yaml
+          echo "config.yaml after patching:"
+          cat infra-cdk/config.yaml
 
       - name: CDK bootstrap
         run: cd infra-cdk && npx cdk bootstrap aws://057122451218/us-east-1
