@@ -20,6 +20,10 @@ The blog documenting the build lives in `blog/`. Update the relevant post in the
 - **Frontend**: React + AG-UI parser auto-selected by `agui-` prefix in `config.yaml`
 - **Infra**: CDK in `infra-cdk/`
 
+## macOS Gotchas
+
+- **Screenshot filenames**: macOS uses a Unicode narrow no-break space (U+202F) between the time and AM/PM in screenshot filenames (e.g. `Screenshot 2026-04-01 at 2.01.18 PM.png`). Normal `cp` with a regular space will fail. Use: `cp $'...path with \u202f...' destination`
+
 ## Adding a Gateway Tool
 
 1. Create `gateway/tools/<name>/<name>_lambda.py` following the handler pattern in `gateway/tools/sample_tool/`
