@@ -42,8 +42,10 @@ Edit `infra-cdk/config.yaml`:
 
 ```yaml
 stack_name_base: your-project-name   # max 35 chars
-admin_user_email: you@example.com    # auto-creates a Cognito user and emails credentials
+admin_user_email: null               # set to your email locally before deploying — do not commit
 ```
+
+> **Note:** `admin_user_email` is left as `null` in the repo to avoid committing personal email addresses. Set it to your email in your local copy before running `cdk deploy` — Cognito will create a user and email you temporary credentials. Do not commit this value.
 
 ### Deploy
 
