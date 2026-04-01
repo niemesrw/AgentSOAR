@@ -296,17 +296,23 @@ export class BackendStack extends cdk.NestedStack {
       })
     )
 
-    // Add OAuth2 Credential Provider access for AgentCore Runtime
-    // The @requires_access_token decorator performs a two-stage process:
-    // 1. GetOauth2CredentialProvider - Looks up provider metadata (ARN, vendor config, grant types)
-    // 2. GetResourceOauth2Token - Uses metadata to fetch the actual access token from Token Vault
+    // Add OAuth2 Credential Provider access for AgentCore Runtime.
+    // Required for the github_connect tool (USER_FEDERATION consent flow):
+    // 1. GetWorkloadAccessToken - get a workload identity token for the current session
+    // 2. GetOauth2CredentialProvider - look up provider metadata
+    // 3. GetResourceOauth2Token - fetch/cache the user's GitHub token from the Token Vault
+    // 4. CompleteResourceTokenAuth - complete the session binding after user authorizes
     agentRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "OAuth2CredentialProviderAccess",
         effect: iam.Effect.ALLOW,
         actions: [
+          "bedrock-agentcore:GetWorkloadAccessToken",
+          "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
+          "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
           "bedrock-agentcore:GetOauth2CredentialProvider",
           "bedrock-agentcore:GetResourceOauth2Token",
+          "bedrock-agentcore:CompleteResourceTokenAuth",
         ],
         resources: [
           `arn:aws:bedrock-agentcore:${this.region}:${this.account}:oauth2-credential-provider/*`,
@@ -339,6 +345,7 @@ export class BackendStack extends cdk.NestedStack {
       MEMORY_ID: memoryId,
       STACK_NAME: config.stack_name_base,
       GATEWAY_CREDENTIAL_PROVIDER_NAME: `${config.stack_name_base}-runtime-gateway-auth`, // Used by @requires_access_token decorator to look up the correct provider
+      GITHUB_CREDENTIAL_PROVIDER_NAME: `${config.stack_name_base}-github`, // Used by github_connect tool for USER_FEDERATION consent flow
     }
 
     // Add claude-agent-sdk specific environment variable
@@ -363,6 +370,7 @@ export class BackendStack extends cdk.NestedStack {
       },
       description: `${pattern} agent runtime for ${config.stack_name_base}`,
     })
+
 
     // AGUI protocol override — CloudFormation doesn't support AGUI enum yet
     // (only MCP | HTTP | A2A). Runtime deploys as HTTP, which also works properly.
@@ -618,30 +626,86 @@ export class BackendStack extends cdk.NestedStack {
       }),
     })
 
-    // GitHub PAT stored in Secrets Manager — populate after deploy via:
-    //   aws secretsmanager put-secret-value --secret-id <arn> --secret-string "ghp_..."
-    const githubPatSecret = new secretsmanager.Secret(this, "GitHubPatSecret", {
-      secretName: `/${config.stack_name_base}/github-pat`,
-      description: "GitHub Personal Access Token for AgentSOAR GitHub tools",
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    // GitHub OAuth App credentials — created and populated by scripts/configure-github-oauth.py
+    // before deploying. CDK imports by name so there's no conflict with the script-created secret.
+    const githubOAuthSecret = secretsmanager.Secret.fromSecretNameV2(
+      this,
+      "GitHubOAuthSecret",
+      `/${config.stack_name_base}/github-oauth`
+    )
+
+    // Lambda to manage the GitHub OAuth2 credential provider lifecycle via CloudFormation
+    const githubProviderName = `${config.stack_name_base}-github`
+    const githubOAuth2ProviderLambda = new lambda.Function(this, "GitHubOAuth2ProviderLambda", {
+      runtime: lambda.Runtime.PYTHON_3_13,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambdas", "github-oauth2-provider")), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+      timeout: cdk.Duration.minutes(5),
+      logGroup: new logs.LogGroup(this, "GitHubOAuth2ProviderLambdaLogGroup", {
+        logGroupName: `/aws/lambda/${config.stack_name_base}-github-oauth2-provider`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    })
+    githubOAuthSecret.grantRead(githubOAuth2ProviderLambda)
+    githubOAuth2ProviderLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "bedrock-agentcore:CreateTokenVault",
+          "bedrock-agentcore:GetTokenVault",
+          "bedrock-agentcore:CreateOauth2CredentialProvider",
+          "bedrock-agentcore:UpdateOauth2CredentialProvider",
+          "bedrock-agentcore:DeleteOauth2CredentialProvider",
+          "bedrock-agentcore:GetOauth2CredentialProvider",
+        ],
+        resources: [
+          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:token-vault/default`,
+          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:token-vault/default/oauth2credentialprovider/*`,
+        ],
+      })
+    )
+    githubOAuth2ProviderLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:DeleteSecret",
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:PutSecretValue",
+        ],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:bedrock-agentcore-identity!default/oauth2/*`,
+        ],
+      })
+    )
+
+    const githubOAuth2ProviderCrProvider = new cr.Provider(this, "GitHubOAuth2ProviderCrProvider", {
+      onEventHandler: githubOAuth2ProviderLambda,
     })
 
-    // Create GitHub tools Lambda
+    // Creates the GithubOauth2 credential provider in AgentCore Identity.
+    // NOTE: The secret must be populated before this will succeed. If you deploy before
+    // setting the secret, update the secret then run `cdk deploy` again to trigger the
+    // Custom Resource. Or deploy with a placeholder secret value first.
+    const githubCredentialProvider = new cdk.CustomResource(this, "GitHubCredentialProvider", {
+      serviceToken: githubOAuth2ProviderCrProvider.serviceToken,
+      properties: {
+        ProviderName: githubProviderName,
+        SecretArn: githubOAuthSecret.secretArn,
+      },
+    })
+
+    // Create GitHub tools Lambda — token is injected by the Gateway (no PAT needed)
     const githubToolLambda = new lambda.Function(this, "GitHubToolLambda", {
       runtime: lambda.Runtime.PYTHON_3_13,
       handler: "github_lambda.handler",
       code: lambda.Code.fromAsset(path.join(__dirname, "../../gateway/tools/github")), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
       timeout: cdk.Duration.seconds(30),
-      environment: {
-        GITHUB_PAT_SECRET_ARN: githubPatSecret.secretArn,
-      },
       logGroup: new logs.LogGroup(this, "GitHubToolLambdaLogGroup", {
         logGroupName: `/aws/lambda/${config.stack_name_base}-github-tool`,
         retention: logs.RetentionDays.ONE_WEEK,
         removalPolicy: cdk.RemovalPolicy.DESTROY,
       }),
     })
-    githubPatSecret.grantRead(githubToolLambda)
 
     // Create comprehensive IAM role for gateway
     const gatewayRole = new iam.Role(this, "GatewayRole", {
@@ -847,7 +911,13 @@ export class BackendStack extends cdk.NestedStack {
     const githubToolSpecPath = path.join(__dirname, "../../gateway/tools/github/tool_spec.json") // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
     const githubApiSpec = JSON.parse(require("fs").readFileSync(githubToolSpecPath, "utf8"))
 
-    // Create Gateway Target for GitHub tools
+    // Create Gateway Target for GitHub tools.
+    //
+    // Credential provider config:
+    // - GATEWAY_IAM_ROLE: authorizes the Gateway to invoke this Lambda (always needed)
+    // - OAUTH AUTHORIZATION_CODE: tells the Gateway to fetch the current user's GitHub
+    //   token from the AgentCore token vault and inject it into the Lambda invocation.
+    //   The user must have authorized the GitHub OAuth App first (via github_connect tool).
     const githubGatewayTarget = new bedrockagentcore.CfnGatewayTarget(this, "GitHubGatewayTarget", {
       gatewayIdentifier: gateway.attrGatewayIdentifier,
       name: "github-tool-target",
@@ -910,9 +980,20 @@ export class BackendStack extends cdk.NestedStack {
       value: toolLambda.functionArn,
     })
 
-    new cdk.CfnOutput(this, "GitHubPatSecretArn", {
-      description: "Secrets Manager ARN for the GitHub PAT — run: aws secretsmanager put-secret-value --secret-id <arn> --secret-string 'ghp_...'",
-      value: githubPatSecret.secretArn,
+    new cdk.CfnOutput(this, "GitHubOAuthSecretArn", {
+      description: "Populate with GitHub OAuth App credentials: aws secretsmanager put-secret-value --secret-id <arn> --secret-string '{\"clientId\":\"...\",\"clientSecret\":\"...\"}'",
+      value: githubOAuthSecret.secretArn,
+    })
+
+    new cdk.CfnOutput(this, "GitHubOAuthCallbackUrl", {
+      description: "Register this as the Authorization callback URL in your GitHub OAuth App (Settings → Developer settings → OAuth Apps)",
+      value: githubCredentialProvider.getAttString("CallbackUrl"),
+    })
+
+    new ssm.StringParameter(this, "GitHubCredentialProviderNameParam", {
+      parameterName: `/${config.stack_name_base}/github_credential_provider_name`,
+      stringValue: githubProviderName,
+      description: "AgentCore Identity credential provider name for GitHub OAuth",
     })
 
     new cdk.CfnOutput(this, "GitHubToolLambdaArn", {

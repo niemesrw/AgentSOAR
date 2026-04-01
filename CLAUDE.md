@@ -13,6 +13,10 @@ AgentSOAR is a fork of [FAST](https://github.com/awslabs/fullstack-solution-temp
 
 The blog documenting the build lives in `blog/`. Update the relevant post in the same PR as the code it describes.
 
+## Local Environment
+
+- Container runtime: **OrbStack** (not Docker Desktop). CDK Python Lambda bundling uses OrbStack's Docker-compatible socket — ensure OrbStack is running before `cdk deploy`.
+
 ## Architecture
 
 - **Agent pattern**: `agui-strands-agent` (AG-UI streaming, Strands backend)

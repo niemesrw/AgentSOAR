@@ -14,9 +14,11 @@ If you're here from the blog, the `main` branch reflects the current state of th
 |------|---------|-------|
 | [Node.js](https://nodejs.org/) | 20+ | |
 | [AWS CDK CLI](https://docs.aws.amazon.com/cdk/v2/guide/getting-started.html) | any | `npm install -g aws-cdk` |
-| [Python](https://www.python.org/) | 3.11+ | |
+| [uv](https://docs.astral.sh/uv/) | latest | Python package manager — `brew install uv`. Used for all Python scripts and agent patterns. |
+| [Python](https://www.python.org/) | 3.11+ | Managed via uv — no separate install needed if you use `uv python install 3.13` |
+| [GitHub CLI (`gh`)](https://cli.github.com/) | latest | `brew install gh`. Used for PR workflows. |
 | [OrbStack](https://orbstack.dev/) | latest | Lightweight Docker Desktop replacement for Mac — installs the `docker` CLI automatically. Docker Desktop also works. |
-| AWS CLI | any | Configured with a named profile for your target account |
+| AWS CLI | any | Configured with SSO — see AWS Profile Setup below |
 | [AgentCore MCP Server](https://github.com/awslabs/amazon-bedrock-agentcore-mcp-server) | optional | Gives your AI coding assistant live access to AgentCore docs inline |
 
 > **Why OrbStack?** Docker Desktop works fine, but OrbStack is faster to start, uses less memory, and the `docker` CLI is a drop-in replacement — no extra config needed.
@@ -39,17 +41,16 @@ If you're here from the blog, the `main` branch reflects the current state of th
 
 ### AWS Profile Setup
 
-All commands below use `--profile <your-profile>`. To configure a named profile pointing at your AWS account:
+All commands below use `--profile <your-profile>`. This project uses AWS SSO for authentication — if you need a walkthrough on setting up SSO profiles, leave a comment on the blog and I'll write a post on my setup.
 
 ```bash
-aws configure --profile my-profile
-# or, for SSO:
+# Configure a named SSO profile (one-time)
 aws configure sso --profile my-profile
-```
 
-Verify it works:
+# Log in before deploying (tokens expire after a few hours)
+aws sso login --profile my-profile
 
-```bash
+# Verify it works
 aws sts get-caller-identity --profile my-profile
 ```
 

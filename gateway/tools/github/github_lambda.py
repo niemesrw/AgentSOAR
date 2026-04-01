@@ -1,35 +1,66 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+"""
+GitHub gateway tool Lambda — authenticated via AgentCore Identity OAuth2.
+
+Authentication flow:
+1. User says "connect GitHub" → agent calls github_connect tool → gets auth URL
+2. User authorizes the GitHub OAuth App → token stored in AgentCore token vault
+3. On subsequent calls, the agent calls get_resource_oauth2_token to fetch the
+   user's cached GitHub token from the vault and passes it to this Lambda via
+   the event or client_context (depending on how the agent invokes the gateway tool)
+
+Note: AgentCore Gateway Lambda targets only support GATEWAY_IAM_ROLE as the
+credential provider type — the gateway cannot inject OAuth tokens directly.
+Token retrieval from the vault is handled by the agent at invocation time.
+"""
+
 import json
 import logging
-import os
 import urllib.error
+import urllib.parse
 import urllib.request
-
-import boto3
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 GITHUB_API = "https://api.github.com"
-SECRET_ARN = os.environ["GITHUB_PAT_SECRET_ARN"]
-
-_cached_pat = None
 
 
-def _get_pat() -> str:
-    """Fetch GitHub PAT from Secrets Manager (cached per Lambda container)."""
-    global _cached_pat
-    if _cached_pat is None:
-        client = boto3.client("secretsmanager")
-        response = client.get_secret_value(SecretId=SECRET_ARN)
-        _cached_pat = response["SecretString"].strip()
-    return _cached_pat
+def _get_access_token(event: dict, context) -> str:
+    """
+    Extract the GitHub access token from the Lambda invocation.
+
+    The agent fetches the token from the AgentCore token vault via
+    get_resource_oauth2_token and passes it here through client_context.custom
+    or the event payload.
+    """
+    custom = {}
+    if context.client_context and context.client_context.custom:
+        custom = context.client_context.custom
+        # Log the full custom context (keys only — don't log token values)
+        logger.info("Lambda client_context.custom keys: %s", list(custom.keys()))
+
+    token = custom.get("accessToken") or custom.get("access_token")
+
+    if not token:
+        token = event.get("accessToken") or event.get("access_token")
+
+    if not token:
+        raise RuntimeError(
+            "No GitHub access token found. The user must authorize GitHub via the "
+            "'github_connect' agent tool before using GitHub tools. "
+            f"(Checked client_context.custom keys: {list(custom.keys())})"
+        )
+
+    return token
 
 
-def _github_request(method: str, path: str, body: dict | None = None) -> dict:
-    """Make an authenticated GitHub API request."""
+def _github_request(
+    method: str, path: str, access_token: str, body: dict | None = None
+) -> dict:
+    """Make an authenticated GitHub API request using the user's OAuth token."""
     url = f"{GITHUB_API}{path}"
     data = json.dumps(body).encode() if body else None
     req = urllib.request.Request(
@@ -37,7 +68,7 @@ def _github_request(method: str, path: str, body: dict | None = None) -> dict:
         data=data,
         method=method,
         headers={
-            "Authorization": f"Bearer {_get_pat()}",
+            "Authorization": f"Bearer {access_token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
             "Content-Type": "application/json",
@@ -50,21 +81,33 @@ def _github_request(method: str, path: str, body: dict | None = None) -> dict:
             return json.loads(raw.decode()) if raw else {}
     except urllib.error.HTTPError as e:
         error_body = e.read().decode()
-        logger.error(f"GitHub API error {e.code}: {error_body}")
+        if e.code == 401:
+            logger.error(
+                "GitHub 401 — token may be expired or have insufficient scopes"
+            )
+        logger.error("GitHub API error %d: %s", e.code, error_body)
         raise RuntimeError(f"GitHub API error {e.code}: {error_body}") from e
 
 
 def github_create_issue(
-    owner: str, repo: str, title: str, body: str, labels: list[str] | None = None
+    access_token: str,
+    owner: str,
+    repo: str,
+    title: str,
+    body: str,
+    labels: list[str] | None = None,
 ) -> str:
-    payload = {"title": title, "body": body}
+    payload: dict = {"title": title, "body": body}
     if labels:
         payload["labels"] = labels
-    result = _github_request("POST", f"/repos/{owner}/{repo}/issues", payload)
+    result = _github_request(
+        "POST", f"/repos/{owner}/{repo}/issues", access_token, payload
+    )
     return f"Created issue #{result['number']}: {result['html_url']}"
 
 
 def github_update_issue(
+    access_token: str,
     owner: str,
     repo: str,
     issue_number: int,
@@ -72,7 +115,7 @@ def github_update_issue(
     labels: list[str] | None = None,
     body: str | None = None,
 ) -> str:
-    payload = {}
+    payload: dict = {}
     if state:
         payload["state"] = state
     if labels is not None:
@@ -80,25 +123,30 @@ def github_update_issue(
     if body:
         payload["body"] = body
     result = _github_request(
-        "PATCH", f"/repos/{owner}/{repo}/issues/{issue_number}", payload
+        "PATCH", f"/repos/{owner}/{repo}/issues/{issue_number}", access_token, payload
     )
     return f"Updated issue #{result['number']}: {result['html_url']}"
 
 
-def github_add_comment(owner: str, repo: str, issue_number: int, body: str) -> str:
+def github_add_comment(
+    access_token: str, owner: str, repo: str, issue_number: int, body: str
+) -> str:
     result = _github_request(
-        "POST", f"/repos/{owner}/{repo}/issues/{issue_number}/comments", {"body": body}
+        "POST",
+        f"/repos/{owner}/{repo}/issues/{issue_number}/comments",
+        access_token,
+        {"body": body},
     )
     return f"Added comment: {result['html_url']}"
 
 
 def github_list_issues(
-    owner: str, repo: str, state: str = "open", labels: str = ""
+    access_token: str, owner: str, repo: str, state: str = "open", labels: str = ""
 ) -> str:
     path = f"/repos/{owner}/{repo}/issues?state={state}&per_page=20"
     if labels:
-        path += f"&labels={labels}"
-    issues = _github_request("GET", path)
+        path += f"&labels={urllib.parse.quote(labels)}"
+    issues = _github_request("GET", path, access_token)
     if not issues:
         return "No issues found."
     lines = [
@@ -108,18 +156,26 @@ def github_list_issues(
 
 
 def github_create_pr(
-    owner: str, repo: str, title: str, body: str, head: str, base: str
+    access_token: str,
+    owner: str,
+    repo: str,
+    title: str,
+    body: str,
+    head: str,
+    base: str,
 ) -> str:
     payload = {"title": title, "body": body, "head": head, "base": base}
-    result = _github_request("POST", f"/repos/{owner}/{repo}/pulls", payload)
+    result = _github_request(
+        "POST", f"/repos/{owner}/{repo}/pulls", access_token, payload
+    )
     return f"Created PR #{result['number']}: {result['html_url']}"
 
 
-def github_search_issues(query: str) -> str:
-    import urllib.parse
-
+def github_search_issues(access_token: str, query: str) -> str:
     encoded = urllib.parse.quote(query)
-    result = _github_request("GET", f"/search/issues?q={encoded}&per_page=10")
+    result = _github_request(
+        "GET", f"/search/issues?q={encoded}&per_page=10", access_token
+    )
     items = result.get("items", [])
     if not items:
         return "No results found."
@@ -134,10 +190,11 @@ def github_search_issues(query: str) -> str:
 
 
 TOOL_HANDLERS = {
-    "github_create_issue": lambda e: github_create_issue(
-        e["owner"], e["repo"], e["title"], e["body"], e.get("labels")
+    "github_create_issue": lambda e, tok: github_create_issue(
+        tok, e["owner"], e["repo"], e["title"], e["body"], e.get("labels")
     ),
-    "github_update_issue": lambda e: github_update_issue(
+    "github_update_issue": lambda e, tok: github_update_issue(
+        tok,
         e["owner"],
         e["repo"],
         e["issue_number"],
@@ -145,16 +202,16 @@ TOOL_HANDLERS = {
         e.get("labels"),
         e.get("body"),
     ),
-    "github_add_comment": lambda e: github_add_comment(
-        e["owner"], e["repo"], e["issue_number"], e["body"]
+    "github_add_comment": lambda e, tok: github_add_comment(
+        tok, e["owner"], e["repo"], e["issue_number"], e["body"]
     ),
-    "github_list_issues": lambda e: github_list_issues(
-        e["owner"], e["repo"], e.get("state", "open"), e.get("labels", "")
+    "github_list_issues": lambda e, tok: github_list_issues(
+        tok, e["owner"], e["repo"], e.get("state", "open"), e.get("labels", "")
     ),
-    "github_create_pr": lambda e: github_create_pr(
-        e["owner"], e["repo"], e["title"], e["body"], e["head"], e["base"]
+    "github_create_pr": lambda e, tok: github_create_pr(
+        tok, e["owner"], e["repo"], e["title"], e["body"], e["head"], e["base"]
     ),
-    "github_search_issues": lambda e: github_search_issues(e["query"]),
+    "github_search_issues": lambda e, tok: github_search_issues(tok, e["query"]),
 }
 
 
@@ -171,16 +228,17 @@ def handler(event, context):
         safe_log = {
             k: event[k] for k in ("owner", "repo", "issue_number") if k in event
         }
-        logger.info(f"Processing tool: {tool_name} {safe_log}")
+        logger.info("Processing tool: %s %s", tool_name, safe_log)
 
         if tool_name not in TOOL_HANDLERS:
             return {
                 "error": f"Unknown tool: {tool_name}. Supported: {list(TOOL_HANDLERS.keys())}"
             }
 
-        result = TOOL_HANDLERS[tool_name](event)
+        access_token = _get_access_token(event, context)
+        result = TOOL_HANDLERS[tool_name](event, access_token)
         return {"content": [{"type": "text", "text": result}]}
 
     except Exception as e:
-        logger.error(f"Error processing request: {str(e)}")
+        logger.error("Error processing request: %s", str(e))
         return {"error": str(e)}
