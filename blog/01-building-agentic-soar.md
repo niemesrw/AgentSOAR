@@ -171,6 +171,25 @@ pattern: agui-strands-agent
 
 CDK re-builds and pushes a new container image on the next deploy. The Runtime update took about 8 seconds.
 
+### Wiring up the GitHub PAT
+
+After deploy, the GitHub Gateway tool exists but has a CDK-generated random placeholder in Secrets Manager — it won't authenticate until you replace it with a real token.
+
+1. Create a GitHub PAT at https://github.com/settings/tokens/new
+   - Note: `AgentSOAR-gateway`
+   - Scopes: **`repo`** (covers issues, PRs, comments)
+
+2. Store it:
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id /AgentSOAR/github-pat \
+  --secret-string "ghp_your_token_here" \
+  --profile your-profile
+```
+
+No redeploy needed — the Lambda fetches the secret on cold start and caches it per container. The next invocation picks it up automatically.
+
 ### It works
 
 ![AgentSOAR running after first deploy](images/agentsoar-first-deploy.png)
