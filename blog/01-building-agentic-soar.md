@@ -96,11 +96,77 @@ This is the narrative no traditional SOAR can tell. The platform improves itself
 
 ---
 
+## Step 0: Actually Deploying the Thing
+
+Before any SOAR logic, you need a running stack. Here's exactly what it took.
+
+### Prerequisites
+
+| Tool | Notes |
+|------|-------|
+| Node.js 20+ | |
+| AWS CDK CLI | `npm install -g aws-cdk` |
+| Python 3.11+ | |
+| [OrbStack](https://orbstack.dev/) | Lightweight Docker Desktop replacement for Mac. Docker Desktop also works. CDK needs a container runtime to build Lambda layers and the agent image. |
+| AWS CLI | Configured with a named profile |
+
+One non-obvious thing: **macOS native containers won't work here**. AgentCore Runtime requires a Linux ARM64 image. OrbStack runs Linux containers natively on Apple Silicon — no Rosetta, no cross-compilation needed.
+
+### The deploy sequence
+
+```bash
+# 1. Clone your fork
+gh repo clone niemesrw/AgentSOAR
+cd AgentSOAR
+
+# 2. Set your stack name in infra-cdk/config.yaml
+#    (leave admin_user_email as null — set it locally, don't commit it)
+
+# 3. Install CDK deps
+cd infra-cdk && npm install
+
+# 4. Bootstrap (once per account/region)
+cdk bootstrap --profile your-profile
+
+# 5. Deploy the backend
+cdk deploy --profile your-profile
+
+# 6. Deploy the frontend
+cd ..
+AWS_PROFILE=your-profile python3 scripts/deploy-frontend.py
+```
+
+Total time: about 6 minutes. CDK creates Cognito, ECR, the AgentCore Runtime, AgentCore Gateway, a DynamoDB feedback table, CloudFront, and Amplify Hosting in one shot. The frontend script pulls the stack outputs, generates `aws-exports.json`, builds the React app, and pushes it to Amplify.
+
+### The one gotcha
+
+OrbStack puts its binaries in `~/.orbstack/bin/` but that path may not be in your shell's PATH when CDK runs (especially in a terminal session that predated OrbStack starting). If you hit `spawnSync docker ENOENT`, prefix the command:
+
+```bash
+PATH="$PATH:$HOME/.orbstack/bin" cdk deploy --profile your-profile
+```
+
+And add it permanently:
+```bash
+echo 'export PATH="$PATH:$HOME/.orbstack/bin"' >> ~/.zshrc
+```
+
+### First login
+
+Since `admin_user_email` is `null` in the committed config, no Cognito user is auto-created. Create one manually in the [Cognito console](https://console.aws.amazon.com/cognito/) — find your user pool, create a user, mark email as verified. You'll get a temporary password to change on first login.
+
+### It works
+
+![AgentSOAR running after first deploy](images/agentsoar-first-deploy.png)
+
+The baseline FAST chat UI — logged in, agent responding. From here, we start turning it into a SOAR.
+
+---
+
 ## What We've Built So Far
 
-*[This section will be updated as the build progresses]*
-
 - [x] Forked FAST as AgentSOAR
+- [x] Deployed to AWS (CDK + Amplify)
 - [x] GitHub MCP server configured in AgentCore Gateway
 - [ ] First incident scenario end-to-end
 - [ ] Log ingestion pipeline
@@ -110,7 +176,9 @@ This is the narrative no traditional SOAR can tell. The platform improves itself
 
 ## What Surprised Us
 
-*[Honest lessons — to be filled in as we build]*
+- **OrbStack PATH issue**: CDK spawns Docker as a subprocess and inherits the shell PATH at launch time. If Docker wasn't in PATH when you opened the terminal, CDK can't find it even after OrbStack starts. Prefix with `PATH=...` or restart the terminal.
+- **No personal data in config**: Committing `admin_user_email` to a public repo is a bad idea — Copilot caught it in code review. Keep it local.
+- **`cdk deploy` does more than you think**: AgentCore Runtime, Gateway, Memory, OAuth2 credential provider Lambda, Cognito, CloudFront, Amplify — all in one command. The FAST template earns its name.
 
 ---
 
