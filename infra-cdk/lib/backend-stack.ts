@@ -40,6 +40,7 @@ export class BackendStack extends cdk.NestedStack {
   private machineClient: cognito.UserPoolClient
   private machineClientSecret: secretsmanager.Secret
   private runtimeCredentialProvider: cdk.CustomResource
+  private githubOAuthCallbackUrl: string
   private agentRuntime: agentcore.Runtime
 
   constructor(scope: Construct, id: string, props: BackendStackProps) {
@@ -349,6 +350,7 @@ export class BackendStack extends cdk.NestedStack {
       STACK_NAME: config.stack_name_base,
       GATEWAY_CREDENTIAL_PROVIDER_NAME: `${config.stack_name_base}-runtime-gateway-auth`, // Used by @requires_access_token decorator to look up the correct provider
       GITHUB_CREDENTIAL_PROVIDER_NAME: `${config.stack_name_base}-github`, // Used by github_connect tool for USER_FEDERATION consent flow
+      GITHUB_OAUTH_CALLBACK_URL: this.githubOAuthCallbackUrl, // Fallback when runtime doesn't inject OAuth2CallbackUrl header
     }
 
     // Add claude-agent-sdk specific environment variable
@@ -696,6 +698,9 @@ export class BackendStack extends cdk.NestedStack {
         SecretArn: githubOAuthSecret.secretArn,
       },
     })
+
+    // Expose callback URL as a class field so createAgentCoreRuntime can pass it as an env var
+    this.githubOAuthCallbackUrl = githubCredentialProvider.getAttString("CallbackUrl")
 
     // Create GitHub tools Lambda — token is injected by the Gateway (no PAT needed)
     const githubToolLambda = new lambda.Function(this, "GitHubToolLambda", {

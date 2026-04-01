@@ -78,10 +78,16 @@ def github_connect() -> str:
         "workloadIdentityToken": workload_token,
         "scopes": ["repo", "read:user"],
     }
-    # The runtime also injects the OAuth2 callback URL registered on the workload identity.
-    callback_url = BedrockAgentCoreContext.get_oauth2_callback_url()
+    # The runtime may inject the OAuth2 callback URL via header; fall back to env var.
+    callback_url = BedrockAgentCoreContext.get_oauth2_callback_url() or os.environ.get(
+        "GITHUB_OAUTH_CALLBACK_URL"
+    )
     if callback_url:
         req["resourceOauth2ReturnUrl"] = callback_url
+    else:
+        logger.warning(
+            "No OAuth2 callback URL available — get_resource_oauth2_token may fail"
+        )
 
     try:
         token_resp = client.get_resource_oauth2_token(**req)
