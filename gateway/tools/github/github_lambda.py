@@ -45,8 +45,9 @@ def _github_request(method: str, path: str, body: dict | None = None) -> dict:
         },
     )
     try:
-        with urllib.request.urlopen(req) as resp:
-            return json.loads(resp.read().decode()) if resp.read else {}
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = resp.read()
+            return json.loads(raw.decode()) if raw else {}
     except urllib.error.HTTPError as e:
         error_body = e.read().decode()
         logger.error(f"GitHub API error {e.code}: {error_body}")
@@ -158,16 +159,19 @@ TOOL_HANDLERS = {
 
 
 def handler(event, context):
-    logger.info(f"Received event: {json.dumps(event)}")
-
     try:
         delimiter = "___"
         original_tool_name = context.client_context.custom["bedrockAgentCoreToolName"]
-        tool_name = original_tool_name[
-            original_tool_name.index(delimiter) + len(delimiter) :
-        ]
+        _, sep, tool_name = original_tool_name.partition(delimiter)
+        if not sep or not tool_name:
+            msg = f"Malformed tool name '{original_tool_name}': missing delimiter '{delimiter}'"
+            logger.error(msg)
+            return {"error": msg}
 
-        logger.info(f"Processing tool: {tool_name}")
+        safe_log = {
+            k: event[k] for k in ("owner", "repo", "issue_number") if k in event
+        }
+        logger.info(f"Processing tool: {tool_name} {safe_log}")
 
         if tool_name not in TOOL_HANDLERS:
             return {
