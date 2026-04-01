@@ -5,7 +5,7 @@ stack_name_base: AgentSOAR
 admin_user_email: null # Set your email here locally before deploying — do not commit
 
 backend:
-  pattern: strands-single-agent # See patterns/ for available options
+  pattern: agui-strands-agent # See patterns/ for available options
   # Pattern prefix determines the frontend parser:
   #   agui-*      → AG-UI parser      (e.g. agui-strands-agent)
   #   strands-*   → Strands parser    (e.g. strands-single-agent)
