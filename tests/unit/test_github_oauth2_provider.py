@@ -89,10 +89,14 @@ class TestHandleCreate:
         mock_bedrock.update_oauth2_credential_provider.return_value = {
             "credentialProviderArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:token-vault/default/oauth2credentialprovider/test-github",
         }
+        mock_bedrock.get_oauth2_credential_provider.return_value = {
+            "callbackUrl": "https://callback.example.com/cb"
+        }
         props = {"ProviderName": "test-github", "SecretArn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:test"}
         result = provider.handle_create(props)
         mock_bedrock.update_oauth2_credential_provider.assert_called_once()
         assert result["PhysicalResourceId"] == "test-github"
+        assert result["Data"]["CallbackUrl"] == "https://callback.example.com/cb"
 
     def test_create_other_exception_re_raises(self):
         mock_bedrock.create_oauth2_credential_provider.side_effect = Exception("AccessDenied")
@@ -120,6 +124,9 @@ class TestHandleUpdate:
 
     def test_update_falls_back_to_built_arn_when_missing(self):
         mock_bedrock.update_oauth2_credential_provider.return_value = {}
+        mock_bedrock.get_oauth2_credential_provider.return_value = {
+            "callbackUrl": "https://callback.example.com/cb"
+        }
         event = {"PhysicalResourceId": "test-github", "ResourceProperties": {}}
         props = {"SecretArn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:test"}
         result = provider.handle_update(event, props)
@@ -127,6 +134,7 @@ class TestHandleUpdate:
             "arn:aws:bedrock-agentcore:us-east-1:123456789012:"
             "token-vault/default/oauth2credentialprovider/test-github"
         )
+        assert result["Data"]["CallbackUrl"] == "https://callback.example.com/cb"
 
 
 # ---------------------------------------------------------------------------

@@ -50,6 +50,23 @@ def handler(event: dict, context: dict) -> dict:
         raise
 
 
+def _get_callback_url(provider_name: str, response: dict) -> str:
+    """Return the callback URL from the API response, or fetch it if missing.
+
+    create_oauth2_credential_provider returns callbackUrl; update does not.
+    Fall back to get_oauth2_credential_provider to ensure we always have it.
+    """
+    callback_url = response.get("callbackUrl", "")
+    if not callback_url:
+        try:
+            get_resp = bedrock_client.get_oauth2_credential_provider(name=provider_name)
+            callback_url = get_resp.get("callbackUrl", "")
+            logger.info("Fetched callback URL via get: %s", callback_url)
+        except Exception as e:
+            logger.warning("Could not fetch callback URL for %s: %s", provider_name, e)
+    return callback_url
+
+
 def _build_provider_arn(provider_name: str) -> str:
     """Construct the provider ARN from its name.
 
@@ -103,7 +120,7 @@ def handle_create(props: dict) -> dict:
 
     logger.info("API response keys: %s", list(response.keys()))
     provider_arn = response.get("credentialProviderArn") or _build_provider_arn(props["ProviderName"])
-    callback_url = response.get("callbackUrl", "")
+    callback_url = _get_callback_url(props["ProviderName"], response)
     logger.info("Created/updated provider ARN: %s, CallbackUrl: %s", provider_arn, callback_url)
 
     return {
@@ -134,8 +151,8 @@ def handle_update(event: dict, props: dict) -> dict:
 
     logger.info("API response keys: %s", list(response.keys()))
     provider_arn = response.get("credentialProviderArn") or _build_provider_arn(provider_name)
-    callback_url = response.get("callbackUrl", "")
-    logger.info("Updated provider ARN: %s", provider_arn)
+    callback_url = _get_callback_url(provider_name, response)
+    logger.info("Updated provider ARN: %s, CallbackUrl: %s", provider_arn, callback_url)
 
     return {
         "PhysicalResourceId": provider_name,
