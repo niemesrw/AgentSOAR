@@ -10,11 +10,16 @@ import os
 import boto3
 from ag_ui.core import RunAgentInput, RunErrorEvent
 from ag_ui_strands import StrandsAgent
+from bedrock_agentcore._utils.endpoints import get_data_plane_endpoint
 from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
 from bedrock_agentcore.memory.integrations.strands.session_manager import (
     AgentCoreMemorySessionManager,
 )
-from bedrock_agentcore.runtime import BedrockAgentCoreApp, RequestContext
+from bedrock_agentcore.runtime import (
+    BedrockAgentCoreApp,
+    BedrockAgentCoreContext,
+    RequestContext,
+)
 from strands import Agent, tool
 from strands.models import BedrockModel
 from tools.gateway import create_gateway_mcp_client
@@ -35,88 +40,71 @@ SYSTEM_PROMPT = (
 )
 
 
-def _make_github_connect_tool(user_jwt: str):
-    """Return a github_connect @tool that uses the caller's JWT for user-delegated OAuth."""
+@tool
+def github_connect() -> str:
+    """
+    Connect your GitHub account to the SOAR agent.
 
-    @tool
-    def github_connect() -> str:
-        """
-        Connect your GitHub account to the SOAR agent.
+    Call this tool once to authorize GitHub access. You will receive a URL to visit
+    in your browser. After you authorize the GitHub OAuth App, your token is stored
+    securely in AgentCore Identity and GitHub tools will work automatically.
 
-        Call this tool once to authorize GitHub access. You will receive a URL to visit
-        in your browser. After you authorize the GitHub OAuth App, your token is stored
-        securely in AgentCore Identity and GitHub tools will work automatically.
+    If you are already connected, this returns a confirmation message.
+    """
+    provider_name = os.environ.get("GITHUB_CREDENTIAL_PROVIDER_NAME", "")
+    if not provider_name:
+        return "GITHUB_CREDENTIAL_PROVIDER_NAME is not configured. Contact your administrator."
 
-        If you are already connected, this returns a confirmation message.
-        """
-        provider_name = os.environ.get("GITHUB_CREDENTIAL_PROVIDER_NAME", "")
-        if not provider_name:
-            return "GITHUB_CREDENTIAL_PROVIDER_NAME is not configured. Contact your administrator."
+    # The AgentCore runtime framework injects the workload access token per-request via the
+    # WorkloadAccessToken header, which app.py stores in BedrockAgentCoreContext.
+    # Never call GetWorkloadAccessToken API directly — it will fail from inside the container.
+    workload_token = BedrockAgentCoreContext.get_workload_access_token()
+    if not workload_token:
+        return (
+            "Workload access token not available. "
+            "This tool must be called from within an AgentCore runtime with JWT inbound auth."
+        )
 
-        client = boto3.client("bedrock-agentcore")
+    region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    client = boto3.client(
+        "bedrock-agentcore",
+        region_name=region,
+        endpoint_url=get_data_plane_endpoint(region),
+    )
 
-        # Step 1: Get a workload access token for this user's session.
-        # AgentCore appends a random suffix to the runtime name (e.g. AgentSOAR_FASTAgent-SgcWYdHjn4).
-        # We can't inject the runtime ARN as an env var (circular CFN dependency), so we read it from
-        # the SSM parameter that CDK writes at deploy time: /{STACK_NAME}/runtime-arn.
-        # For user-delegated OAuth flows we must use get_workload_access_token_for_jwt and pass the
-        # caller's Cognito JWT; get_workload_access_token is only for non-user M2M flows.
-        stack_name = os.environ.get("STACK_NAME", "")
-        try:
-            ssm = boto3.client("ssm")
-            runtime_arn = ssm.get_parameter(Name=f"/{stack_name}/runtime-arn")[
-                "Parameter"
-            ]["Value"]
-            workload_name = runtime_arn.split("/")[-1]
-        except Exception as e:
-            logger.warning("Could not read runtime ARN from SSM: %s", e)
-            workload_name = ""
-        try:
-            workload_resp = client.get_workload_access_token_for_jwt(
-                workloadName=workload_name,
-                userToken=user_jwt,
-            )
-            workload_token = workload_resp["workloadAccessToken"]
-        except Exception as e:
-            logger.error(
-                "get_workload_access_token_for_jwt failed (workloadName=%s): %s",
-                workload_name,
-                e,
-            )
-            return f"Could not get workload token: {e}. Ensure the agent runtime is deployed correctly."
+    req: dict = {
+        "resourceCredentialProviderName": provider_name,
+        "oauth2Flow": "USER_FEDERATION",
+        "workloadIdentityToken": workload_token,
+        "scopes": ["repo", "read:user"],
+    }
+    # The runtime also injects the OAuth2 callback URL registered on the workload identity.
+    callback_url = BedrockAgentCoreContext.get_oauth2_callback_url()
+    if callback_url:
+        req["resourceOauth2ReturnUrl"] = callback_url
 
-        # Step 2: Try to get the user's GitHub token.
-        # - If the token exists in the vault → user is already connected.
-        # - If AgentCore returns an authorizationUrl → user needs to authorize.
-        try:
-            token_resp = client.get_resource_oauth2_token(
-                resourceCredentialProviderName=provider_name,
-                oauth2Flow="USER_FEDERATION",
-                workloadIdentityToken=workload_token,
-                scopes=["repo", "read:user"],
-            )
-        except Exception as e:
-            logger.error("get_resource_oauth2_token error: %s", e)
-            return f"Error checking GitHub authorization: {e}"
+    try:
+        token_resp = client.get_resource_oauth2_token(**req)
+    except Exception as e:
+        logger.error("get_resource_oauth2_token error: %s", e)
+        return f"Error checking GitHub authorization: {e}"
 
-        if "accessToken" in token_resp:
-            return (
-                "GitHub is already connected! Your GitHub tools are ready to use. "
-                "Try: 'list my open issues in owner/repo'"
-            )
+    if "accessToken" in token_resp:
+        return (
+            "GitHub is already connected! Your GitHub tools are ready to use. "
+            "Try: 'list my open issues in owner/repo'"
+        )
 
-        if "authorizationUrl" in token_resp:
-            auth_url = token_resp["authorizationUrl"]
-            return (
-                f"Please authorize GitHub access by visiting this URL in your browser:\n\n"
-                f"{auth_url}\n\n"
-                f"After you click 'Authorize', your GitHub token will be stored securely "
-                f"and GitHub tools will work automatically in future requests."
-            )
+    if "authorizationUrl" in token_resp:
+        auth_url = token_resp["authorizationUrl"]
+        return (
+            f"Please authorize GitHub access by visiting this URL in your browser:\n\n"
+            f"{auth_url}\n\n"
+            f"After you click 'Authorize', your GitHub token will be stored securely "
+            f"and GitHub tools will work automatically in future requests."
+        )
 
-        return f"Unexpected response from AgentCore Identity: {list(token_resp.keys())}"
-
-    return github_connect
+    return f"Unexpected response from AgentCore Identity: {list(token_resp.keys())}"
 
 
 def _build_model() -> BedrockModel:
@@ -138,7 +126,7 @@ def _create_session_manager(
     )
 
 
-def _create_agent(user_id: str, session_id: str, user_jwt: str) -> Agent:
+def _create_agent(user_id: str, session_id: str) -> Agent:
     """Create a Strands Agent with Gateway MCP tools, Memory, and Code Interpreter."""
     gateway_client = create_gateway_mcp_client()
 
@@ -148,11 +136,7 @@ def _create_agent(user_id: str, session_id: str, user_jwt: str) -> Agent:
     return Agent(
         name="strands_agent",
         system_prompt=SYSTEM_PROMPT,
-        tools=[
-            gateway_client,
-            code_tools.execute_python_securely,
-            _make_github_connect_tool(user_jwt),
-        ],
+        tools=[gateway_client, code_tools.execute_python_securely, github_connect],
         model=_build_model(),
         session_manager=_create_session_manager(user_id, session_id),
     )
@@ -161,18 +145,9 @@ def _create_agent(user_id: str, session_id: str, user_jwt: str) -> Agent:
 class ActorAwareStrandsAgent(StrandsAgent):
     """StrandsAgent that creates the agent per-request with fresh MCP context."""
 
-    def __init__(
-        self,
-        *,
-        user_id: str,
-        session_id: str,
-        user_jwt: str,
-        name: str,
-        description: str,
-    ):
+    def __init__(self, *, user_id: str, session_id: str, name: str, description: str):
         self._user_id = user_id
         self._session_id = session_id
-        self._user_jwt = user_jwt
         super().__init__(
             agent=Agent(model=_build_model(), system_prompt=SYSTEM_PROMPT),
             name=name,
@@ -182,28 +157,20 @@ class ActorAwareStrandsAgent(StrandsAgent):
     async def run(self, input_data: RunAgentInput):
         thread_id = input_data.thread_id or "default"
         self._agents_by_thread[thread_id] = _create_agent(
-            self._user_id, self._session_id, self._user_jwt
+            self._user_id, self._session_id
         )
         async for event in super().run(input_data):
             yield event
-
-
-def _extract_jwt(context: RequestContext) -> str:
-    """Return the raw JWT from the Authorization header (strips 'Bearer ' prefix)."""
-    auth = (context.request_headers or {}).get("Authorization", "")
-    return auth[len("Bearer ") :] if auth.startswith("Bearer ") else auth
 
 
 @app.entrypoint
 async def invocations(payload: dict, context: RequestContext):
     input_data = RunAgentInput.model_validate(payload)
     user_id = extract_user_id_from_context(context)
-    user_jwt = _extract_jwt(context)
 
     agent = ActorAwareStrandsAgent(
         user_id=user_id,
         session_id=input_data.thread_id,
-        user_jwt=user_jwt,
         name="agui_strands_agent",
         description="AG-UI Strands agent with Gateway MCP tools and Code Interpreter",
     )
