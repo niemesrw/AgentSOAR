@@ -17,8 +17,25 @@ If you're here from the blog, the `main` branch reflects the current state of th
 | [Python](https://www.python.org/) | 3.11+ | |
 | [OrbStack](https://orbstack.dev/) | latest | Lightweight Docker Desktop replacement for Mac — installs the `docker` CLI automatically. Docker Desktop also works. |
 | AWS CLI | any | Configured with a named profile for your target account |
+| [AgentCore MCP Server](https://github.com/awslabs/amazon-bedrock-agentcore-mcp-server) | optional | Gives your AI coding assistant live access to AgentCore docs inline |
 
 > **Why OrbStack?** Docker Desktop works fine, but OrbStack is faster to start, uses less memory, and the `docker` CLI is a drop-in replacement — no extra config needed.
+
+**AgentCore MCP Server** — add to your Claude Code or Cursor MCP config:
+
+```json
+{
+  "mcpServers": {
+    "bedrock-agentcore-mcp-server": {
+      "command": "uvx",
+      "args": ["awslabs.amazon-bedrock-agentcore-mcp-server@latest"],
+      "env": { "FASTMCP_LOG_LEVEL": "ERROR" },
+      "disabled": false,
+      "autoApprove": ["search_agentcore_docs", "fetch_agentcore_doc"]
+    }
+  }
+}
+```
 
 ### AWS Profile Setup
 
