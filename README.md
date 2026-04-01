@@ -6,6 +6,60 @@ AgentSOAR is a fork of the [AWS FAST template](https://github.com/awslabs/fullst
 
 If you're here from the blog, the `main` branch reflects the current state of the build. Each post corresponds to a PR — check the [CHANGELOG](CHANGELOG.md) to see what changed when.
 
+## Getting Started (Follow Along)
+
+### Prerequisites
+
+| Tool | Version | Notes |
+|------|---------|-------|
+| [Node.js](https://nodejs.org/) | 20+ | |
+| [AWS CDK CLI](https://docs.aws.amazon.com/cdk/v2/guide/getting-started.html) | any | `npm install -g aws-cdk` |
+| [Python](https://www.python.org/) | 3.11+ | |
+| [OrbStack](https://orbstack.dev/) | latest | Lightweight Docker Desktop replacement for Mac — installs the `docker` CLI automatically. Docker Desktop also works. |
+| AWS CLI | any | Configured with a named profile for your target account |
+
+> **Why OrbStack?** Docker Desktop works fine, but OrbStack is faster to start, uses less memory, and the `docker` CLI is a drop-in replacement — no extra config needed.
+
+### AWS Profile Setup
+
+All commands below use `--profile <your-profile>`. To configure a named profile pointing at your AWS account:
+
+```bash
+aws configure --profile my-profile
+# or, for SSO:
+aws configure sso --profile my-profile
+```
+
+Verify it works:
+
+```bash
+aws sts get-caller-identity --profile my-profile
+```
+
+### Configure
+
+Edit `infra-cdk/config.yaml`:
+
+```yaml
+stack_name_base: your-project-name   # max 35 chars
+admin_user_email: null               # set to your email locally before deploying — do not commit
+```
+
+> **Note:** `admin_user_email` is left as `null` in the repo to avoid committing personal email addresses. Set it to your email in your local copy before running `cdk deploy` — Cognito will create a user and email you temporary credentials. Do not commit this value.
+
+### Deploy
+
+```bash
+cd infra-cdk
+npm install
+cdk bootstrap --profile my-profile   # once per account/region
+cdk deploy --profile my-profile
+cd ..
+AWS_PROFILE=my-profile python scripts/deploy-frontend.py
+```
+
+The frontend deploy script prints the app URL when it completes.
+
 ---
 
 ## Fullstack AgentCore Solution Template (FAST)
