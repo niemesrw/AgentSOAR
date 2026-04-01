@@ -618,14 +618,40 @@ export class BackendStack extends cdk.NestedStack {
       }),
     })
 
+    // GitHub PAT stored in Secrets Manager — populate after deploy via:
+    //   aws secretsmanager put-secret-value --secret-id <arn> --secret-string "ghp_..."
+    const githubPatSecret = new secretsmanager.Secret(this, "GitHubPatSecret", {
+      secretName: `/${config.stack_name_base}/github-pat`,
+      description: "GitHub Personal Access Token for AgentSOAR GitHub tools",
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    })
+
+    // Create GitHub tools Lambda
+    const githubToolLambda = new lambda.Function(this, "GitHubToolLambda", {
+      runtime: lambda.Runtime.PYTHON_3_13,
+      handler: "github_lambda.handler",
+      code: lambda.Code.fromAsset(path.join(__dirname, "../../gateway/tools/github")), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+      timeout: cdk.Duration.seconds(30),
+      environment: {
+        GITHUB_PAT_SECRET_ARN: githubPatSecret.secretArn,
+      },
+      logGroup: new logs.LogGroup(this, "GitHubToolLambdaLogGroup", {
+        logGroupName: `/aws/lambda/${config.stack_name_base}-github-tool`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    })
+    githubPatSecret.grantRead(githubToolLambda)
+
     // Create comprehensive IAM role for gateway
     const gatewayRole = new iam.Role(this, "GatewayRole", {
       assumedBy: new iam.ServicePrincipal("bedrock-agentcore.amazonaws.com"),
       description: "Role for AgentCore Gateway with comprehensive permissions",
     })
 
-    // Lambda invoke permission
+    // Lambda invoke permissions
     toolLambda.grantInvoke(gatewayRole)
+    githubToolLambda.grantInvoke(gatewayRole)
 
     // Bedrock permissions (region-agnostic)
     gatewayRole.addToPolicy(
@@ -817,9 +843,37 @@ export class BackendStack extends cdk.NestedStack {
       ],
     })
 
+    // Load GitHub tool specification
+    const githubToolSpecPath = path.join(__dirname, "../../gateway/tools/github/tool_spec.json") // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+    const githubApiSpec = JSON.parse(require("fs").readFileSync(githubToolSpecPath, "utf8"))
+
+    // Create Gateway Target for GitHub tools
+    const githubGatewayTarget = new bedrockagentcore.CfnGatewayTarget(this, "GitHubGatewayTarget", {
+      gatewayIdentifier: gateway.attrGatewayIdentifier,
+      name: "github-tool-target",
+      description: "GitHub tools — create issues, PRs, comments, and search",
+      targetConfiguration: {
+        mcp: {
+          lambda: {
+            lambdaArn: githubToolLambda.functionArn,
+            toolSchema: {
+              inlinePayload: githubApiSpec,
+            },
+          },
+        },
+      },
+      credentialProviderConfigurations: [
+        {
+          credentialProviderType: "GATEWAY_IAM_ROLE",
+        },
+      ],
+    })
+
     // Ensure proper creation order
     gatewayTarget.addDependency(gateway)
+    githubGatewayTarget.addDependency(gateway)
     gateway.node.addDependency(toolLambda)
+    gateway.node.addDependency(githubToolLambda)
     gateway.node.addDependency(this.machineClient)
     gateway.node.addDependency(gatewayRole)
 
@@ -854,6 +908,16 @@ export class BackendStack extends cdk.NestedStack {
     new cdk.CfnOutput(this, "ToolLambdaArn", {
       description: "ARN of the sample tool Lambda",
       value: toolLambda.functionArn,
+    })
+
+    new cdk.CfnOutput(this, "GitHubPatSecretArn", {
+      description: "Secrets Manager ARN for the GitHub PAT — run: aws secretsmanager put-secret-value --secret-id <arn> --secret-string 'ghp_...'",
+      value: githubPatSecret.secretArn,
+    })
+
+    new cdk.CfnOutput(this, "GitHubToolLambdaArn", {
+      description: "ARN of the GitHub tool Lambda",
+      value: githubToolLambda.functionArn,
     })
   }
 
