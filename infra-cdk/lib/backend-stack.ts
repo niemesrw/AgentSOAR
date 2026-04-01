@@ -1,5 +1,6 @@
 import * as cdk from "aws-cdk-lib"
 import * as cognito from "aws-cdk-lib/aws-cognito"
+import * as ec2 from "aws-cdk-lib/aws-ec2"
 import * as iam from "aws-cdk-lib/aws-iam"
 import * as ssm from "aws-cdk-lib/aws-ssm"
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager"
@@ -35,9 +36,10 @@ export class BackendStack extends cdk.NestedStack {
   public runtimeArn: string
   public memoryArn: string
   private agentName: cdk.CfnParameter
-  private networkMode: cdk.CfnParameter
   private userPool: cognito.IUserPool
   private machineClient: cognito.UserPoolClient
+  private machineClientSecret: secretsmanager.Secret
+  private runtimeCredentialProvider: cdk.CustomResource
   private agentRuntime: agentcore.Runtime
 
   constructor(scope: Construct, id: string, props: BackendStackProps) {
@@ -100,15 +102,8 @@ export class BackendStack extends cdk.NestedStack {
     // Parameters
     this.agentName = new cdk.CfnParameter(this, "AgentName", {
       type: "String",
-      default: "StrandsAgent",
+      default: "FASTAgent",
       description: "Name for the agent runtime",
-    })
-
-    this.networkMode = new cdk.CfnParameter(this, "NetworkMode", {
-      type: "String",
-      default: "PUBLIC",
-      description: "Network mode for AgentCore resources",
-      allowedValues: ["PUBLIC", "PRIVATE"],
     })
 
     const stack = cdk.Stack.of(this)
@@ -118,10 +113,17 @@ export class BackendStack extends cdk.NestedStack {
     let agentRuntimeArtifact: agentcore.AgentRuntimeArtifact
     let zipPackagerResource: cdk.CustomResource | undefined
 
+    if (deploymentType === "zip" && (pattern === "claude-agent-sdk-single-agent" || pattern === "claude-agent-sdk-multi-agent")) {
+      throw new Error(
+        "claude-agent-sdk patterns require Docker deployment (deployment_type: docker) " +
+        "because they need Node.js and the claude-code CLI installed at build time."
+      )
+    }
+
     if (deploymentType === "zip") {
       // ZIP DEPLOYMENT: Use Lambda to package and upload to S3 (no Docker required)
-      const repoRoot = path.resolve(__dirname, "..", "..")
-      const patternDir = path.join(repoRoot, "patterns", pattern)
+      const repoRoot = path.resolve(__dirname, "..", "..") // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+      const patternDir = path.join(repoRoot, "patterns", pattern) // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
 
       // Create S3 bucket for agent code
       const agentCodeBucket = new s3.Bucket(this, "AgentCodeBucket", {
@@ -135,7 +137,7 @@ export class BackendStack extends cdk.NestedStack {
       const packagerLambda = new lambda.Function(this, "ZipPackagerLambda", {
         runtime: lambda.Runtime.PYTHON_3_12,
         handler: "index.handler",
-        code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambdas", "zip-packager")),
+        code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambdas", "zip-packager")), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
         timeout: cdk.Duration.minutes(10),
         memorySize: 1024,
         ephemeralStorageSize: cdk.Size.gibibytes(2),
@@ -149,21 +151,21 @@ export class BackendStack extends cdk.NestedStack {
       // Read pattern .py files
       for (const file of fs.readdirSync(patternDir)) {
         if (file.endsWith(".py")) {
-          const content = fs.readFileSync(path.join(patternDir, file))
+          const content = fs.readFileSync(path.join(patternDir, file)) // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
           agentCode[file] = content.toString("base64")
         }
       }
 
       // Read shared modules (gateway/, tools/)
       for (const module of ["gateway", "tools"]) {
-        const moduleDir = path.join(repoRoot, module)
+        const moduleDir = path.join(repoRoot, module) // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
         if (fs.existsSync(moduleDir)) {
           this.readDirRecursive(moduleDir, module, agentCode)
         }
       }
 
       // Read requirements
-      const requirementsPath = path.join(patternDir, "requirements.txt")
+      const requirementsPath = path.join(patternDir, "requirements.txt") // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
       const requirements = fs.readFileSync(requirementsPath, "utf-8")
         .split("\n")
         .map(line => line.trim())
@@ -207,7 +209,7 @@ export class BackendStack extends cdk.NestedStack {
     } else {
       // DOCKER DEPLOYMENT: Use container-based deployment
       agentRuntimeArtifact = agentcore.AgentRuntimeArtifact.fromAsset(
-        path.resolve(__dirname, "..", ".."),
+        path.resolve(__dirname, "..", ".."), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
         {
           platform: ecr_assets.Platform.LINUX_ARM64,
           file: `patterns/${pattern}/Dockerfile`,
@@ -215,11 +217,12 @@ export class BackendStack extends cdk.NestedStack {
       )
     }
 
-    // Configure network mode
-    const networkConfiguration =
-      this.networkMode.valueAsString === "PRIVATE"
-        ? undefined // For private mode, you would need to configure VPC settings
-        : agentcore.RuntimeNetworkConfiguration.usingPublicNetwork()
+    // Configure network mode based on config.yaml settings.
+    // PUBLIC: Runtime is accessible over the public internet (default).
+    // VPC: Runtime is deployed into a user-provided VPC for private network isolation.
+    //      The user must ensure their VPC has the necessary VPC endpoints for AWS services.
+    //      See docs/DEPLOYMENT.md for the full list of required VPC endpoints.
+    const networkConfiguration = this.buildNetworkConfiguration(config)
 
     // Configure JWT authorizer with Cognito
     const authorizerConfiguration = agentcore.RuntimeAuthorizerConfiguration.usingJWT(
@@ -267,7 +270,7 @@ export class BackendStack extends cdk.NestedStack {
       })
     )
 
-    // Add SSM permissions for Gateway URL lookup
+    // Add SSM permissions for AgentCore Gateway URL lookup
     agentRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "SSMParameterAccess",
@@ -293,15 +296,60 @@ export class BackendStack extends cdk.NestedStack {
       })
     )
 
+    // Add OAuth2 Credential Provider access for AgentCore Runtime
+    // The @requires_access_token decorator performs a two-stage process:
+    // 1. GetOauth2CredentialProvider - Looks up provider metadata (ARN, vendor config, grant types)
+    // 2. GetResourceOauth2Token - Uses metadata to fetch the actual access token from Token Vault
+    agentRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "OAuth2CredentialProviderAccess",
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "bedrock-agentcore:GetOauth2CredentialProvider",
+          "bedrock-agentcore:GetResourceOauth2Token",
+        ],
+        resources: [
+          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:oauth2-credential-provider/*`,
+          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:token-vault/*`,
+          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/*`,
+        ],
+      })
+    )
+
+    // Add Secrets Manager access for OAuth2
+    // AgentCore Runtime needs to read two secrets:
+    // 1. Machine client secret (created by CDK)
+    // 2. Token Vault OAuth2 secret (created by AgentCore Identity)
+    agentRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "SecretsManagerOAuth2Access",
+        effect: iam.Effect.ALLOW,
+        actions: ["secretsmanager:GetSecretValue"],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:/${config.stack_name_base}/machine_client_secret*`,
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:bedrock-agentcore-identity!default/oauth2/${config.stack_name_base}-runtime-gateway-auth*`,
+        ],
+      })
+    )
+
     // Environment variables for the runtime
     const envVars: { [key: string]: string } = {
       AWS_REGION: stack.region,
       AWS_DEFAULT_REGION: stack.region,
       MEMORY_ID: memoryId,
-      STACK_NAME: config.stack_name_base, // Required for agent to find SSM parameters
+      STACK_NAME: config.stack_name_base,
+      GATEWAY_CREDENTIAL_PROVIDER_NAME: `${config.stack_name_base}-runtime-gateway-auth`, // Used by @requires_access_token decorator to look up the correct provider
+    }
+
+    // Add claude-agent-sdk specific environment variable
+    if (pattern === "claude-agent-sdk-single-agent" || pattern === "claude-agent-sdk-multi-agent") {
+      envVars["CLAUDE_CODE_USE_BEDROCK"] = "1"
     }
 
     // Create the runtime using L2 construct
+    // requestHeaderConfiguration allows the agent to read the Authorization header
+    // from RequestContext.request_headers, which is needed to securely extract the
+    // user ID from the validated JWT token (sub claim) instead of trusting the payload body.
     this.agentRuntime = new agentcore.Runtime(this, "Runtime", {
       runtimeName: `${config.stack_name_base.replace(/-/g, "_")}_${this.agentName.valueAsString}`,
       agentRuntimeArtifact: agentRuntimeArtifact,
@@ -310,8 +358,18 @@ export class BackendStack extends cdk.NestedStack {
       protocolConfiguration: agentcore.ProtocolType.HTTP,
       environmentVariables: envVars,
       authorizerConfiguration: authorizerConfiguration,
+      requestHeaderConfiguration: {
+        allowlistedHeaders: ["Authorization"],
+      },
       description: `${pattern} agent runtime for ${config.stack_name_base}`,
     })
+
+    // AGUI protocol override — CloudFormation doesn't support AGUI enum yet
+    // (only MCP | HTTP | A2A). Runtime deploys as HTTP, which also works properly.
+    // if (pattern.startsWith("agui-")) {
+    //   const cfnRuntime = this.agentRuntime.node.defaultChild as cdk.CfnResource
+    //   cfnRuntime.addPropertyOverride("ProtocolConfiguration", "AGUI")
+    // }
 
     // Make sure that ZIP is uploaded before Runtime is created
     if (zipPackagerResource) {
@@ -371,12 +429,6 @@ export class BackendStack extends cdk.NestedStack {
       parameterName: `/${config.stack_name_base}/machine_client_id`,
       stringValue: this.machineClient.userPoolClientId,
       description: "Machine Client ID for M2M authentication",
-    })
-
-    new secretsmanager.Secret(this, "MachineClientSecret", {
-      secretName: `/${config.stack_name_base}/machine_client_secret`,
-      secretStringValue: cdk.SecretValue.unsafePlainText(this.machineClient.userPoolClientSecret.unsafeUnwrap()),
-      description: "Machine Client Secret for M2M authentication",
     })
 
     // Use the correct Cognito domain format from the passed domain
@@ -449,10 +501,12 @@ export class BackendStack extends cdk.NestedStack {
     feedbackTable: dynamodb.Table
   ): void {
     // Create Lambda function for feedback using Python
+    // ARM_64 required — matches Powertools ARM64 layer and avoids cross-platform
     const feedbackLambda = new PythonFunction(this, "FeedbackLambda", {
       functionName: `${config.stack_name_base}-feedback`,
       runtime: lambda.Runtime.PYTHON_3_13,
-      entry: path.join(__dirname, "..", "lambdas", "feedback"),
+      architecture: lambda.Architecture.ARM_64,
+      entry: path.join(__dirname, "..", "lambdas", "feedback"), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
       handler: "handler",
       environment: {
         TABLE_NAME: feedbackTable.tableName,
@@ -497,6 +551,7 @@ export class BackendStack extends cdk.NestedStack {
         throttlingRateLimit: 100,
         throttlingBurstLimit: 200,
         cachingEnabled: true,
+        cacheDataEncrypted: true,
         cacheClusterEnabled: true,
         cacheClusterSize: "0.5",
         cacheTtl: cdk.Duration.minutes(5),
@@ -554,7 +609,7 @@ export class BackendStack extends cdk.NestedStack {
     const toolLambda = new lambda.Function(this, "SampleToolLambda", {
       runtime: lambda.Runtime.PYTHON_3_13,
       handler: "sample_tool_lambda.handler",
-      code: lambda.Code.fromAsset(path.join(__dirname, "../../gateway/tools/sample_tool")),
+      code: lambda.Code.fromAsset(path.join(__dirname, "../../gateway/tools/sample_tool")), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
       timeout: cdk.Duration.seconds(30),
       logGroup: new logs.LogGroup(this, "SampleToolLambdaLogGroup", {
         logGroupName: `/aws/lambda/${config.stack_name_base}-sample-tool`,
@@ -563,14 +618,40 @@ export class BackendStack extends cdk.NestedStack {
       }),
     })
 
+    // GitHub PAT stored in Secrets Manager — populate after deploy via:
+    //   aws secretsmanager put-secret-value --secret-id <arn> --secret-string "ghp_..."
+    const githubPatSecret = new secretsmanager.Secret(this, "GitHubPatSecret", {
+      secretName: `/${config.stack_name_base}/github-pat`,
+      description: "GitHub Personal Access Token for AgentSOAR GitHub tools",
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    })
+
+    // Create GitHub tools Lambda
+    const githubToolLambda = new lambda.Function(this, "GitHubToolLambda", {
+      runtime: lambda.Runtime.PYTHON_3_13,
+      handler: "github_lambda.handler",
+      code: lambda.Code.fromAsset(path.join(__dirname, "../../gateway/tools/github")), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+      timeout: cdk.Duration.seconds(30),
+      environment: {
+        GITHUB_PAT_SECRET_ARN: githubPatSecret.secretArn,
+      },
+      logGroup: new logs.LogGroup(this, "GitHubToolLambdaLogGroup", {
+        logGroupName: `/aws/lambda/${config.stack_name_base}-github-tool`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    })
+    githubPatSecret.grantRead(githubToolLambda)
+
     // Create comprehensive IAM role for gateway
     const gatewayRole = new iam.Role(this, "GatewayRole", {
       assumedBy: new iam.ServicePrincipal("bedrock-agentcore.amazonaws.com"),
       description: "Role for AgentCore Gateway with comprehensive permissions",
     })
 
-    // Lambda invoke permission
+    // Lambda invoke permissions
     toolLambda.grantInvoke(gatewayRole)
+    githubToolLambda.grantInvoke(gatewayRole)
 
     // Bedrock permissions (region-agnostic)
     gatewayRole.addToPolicy(
@@ -616,12 +697,106 @@ export class BackendStack extends cdk.NestedStack {
     )
 
     // Load tool specification from JSON file
-    const toolSpecPath = path.join(__dirname, "../../gateway/tools/sample_tool/tool_spec.json")
+    const toolSpecPath = path.join(__dirname, "../../gateway/tools/sample_tool/tool_spec.json") // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
     const apiSpec = JSON.parse(require("fs").readFileSync(toolSpecPath, "utf8"))
 
     // Cognito OAuth2 configuration for gateway
     const cognitoIssuer = `https://cognito-idp.${this.region}.amazonaws.com/${this.userPool.userPoolId}`
     const cognitoDiscoveryUrl = `${cognitoIssuer}/.well-known/openid-configuration`
+
+    // Create OAuth2 Credential Provider for AgentCore Runtime to authenticate with AgentCore Gateway
+    // Uses cr.Provider pattern with explicit Lambda to avoid logging secrets in CloudWatch
+    const providerName = `${config.stack_name_base}-runtime-gateway-auth`
+
+    // Lambda to create/delete OAuth2 provider
+    const oauth2ProviderLambda = new lambda.Function(this, "OAuth2ProviderLambda", {
+      runtime: lambda.Runtime.PYTHON_3_13,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambdas", "oauth2-provider")), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+      timeout: cdk.Duration.minutes(5),
+      logGroup: new logs.LogGroup(this, "OAuth2ProviderLambdaLogGroup", {
+        logGroupName: `/aws/lambda/${config.stack_name_base}-oauth2-provider`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    })
+
+    // Grant Lambda permissions to read machine client secret
+    this.machineClientSecret.grantRead(oauth2ProviderLambda)
+
+    // Grant Lambda permissions for Bedrock AgentCore operations
+    // OAuth2 Credential Provider operations - scoped to all providers in default Token Vault
+    // Note: Need both vault-level and nested resource permissions because:
+    // - CreateOauth2CredentialProvider checks permission on vault itself (token-vault/default)
+    // - Also checks permission on the nested resource path (token-vault/default/oauth2credentialprovider/*)
+    oauth2ProviderLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "bedrock-agentcore:CreateOauth2CredentialProvider",
+          "bedrock-agentcore:DeleteOauth2CredentialProvider",
+          "bedrock-agentcore:GetOauth2CredentialProvider",
+        ],
+        resources: [
+          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:token-vault/default`,
+          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:token-vault/default/oauth2credentialprovider/*`,
+        ],
+      })
+    )
+
+    // Token Vault operations - scoped to default vault
+    // Note: Need both exact match (default) and wildcard (default/*) because:
+    // - AWS checks permission on the vault container itself (token-vault/default)
+    // - AWS also checks permission on resources inside (token-vault/default/*)
+    oauth2ProviderLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "bedrock-agentcore:CreateTokenVault",
+          "bedrock-agentcore:GetTokenVault",
+          "bedrock-agentcore:DeleteTokenVault",
+        ],
+        resources: [
+          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:token-vault/default`,
+          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:token-vault/default/*`,
+        ],
+      })
+    )
+
+    // Grant Lambda permissions for Token Vault secret management
+    // Scoped to OAuth2 secrets in AgentCore Identity default namespace
+    oauth2ProviderLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:DeleteSecret",
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:PutSecretValue",
+        ],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:bedrock-agentcore-identity!default/oauth2/*`,
+        ],
+      })
+    )
+
+    // Create Custom Resource Provider
+    const oauth2Provider = new cr.Provider(this, "OAuth2ProviderProvider", {
+      onEventHandler: oauth2ProviderLambda,
+    })
+
+    // Create Custom Resource
+    const runtimeCredentialProvider = new cdk.CustomResource(this, "RuntimeCredentialProvider", {
+      serviceToken: oauth2Provider.serviceToken,
+      properties: {
+        ProviderName: providerName,
+        ClientSecretArn: this.machineClientSecret.secretArn,
+        DiscoveryUrl: cognitoDiscoveryUrl,
+        ClientId: this.machineClient.userPoolClientId,
+      },
+    })
+
+
+
+    // Store for use in createAgentCoreRuntime()
+    this.runtimeCredentialProvider = runtimeCredentialProvider
 
     // Create Gateway using L1 construct (CfnGateway)
     // This replaces the Custom Resource approach with native CloudFormation support
@@ -668,13 +843,41 @@ export class BackendStack extends cdk.NestedStack {
       ],
     })
 
+    // Load GitHub tool specification
+    const githubToolSpecPath = path.join(__dirname, "../../gateway/tools/github/tool_spec.json") // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+    const githubApiSpec = JSON.parse(require("fs").readFileSync(githubToolSpecPath, "utf8"))
+
+    // Create Gateway Target for GitHub tools
+    const githubGatewayTarget = new bedrockagentcore.CfnGatewayTarget(this, "GitHubGatewayTarget", {
+      gatewayIdentifier: gateway.attrGatewayIdentifier,
+      name: "github-tool-target",
+      description: "GitHub tools — create issues, PRs, comments, and search",
+      targetConfiguration: {
+        mcp: {
+          lambda: {
+            lambdaArn: githubToolLambda.functionArn,
+            toolSchema: {
+              inlinePayload: githubApiSpec,
+            },
+          },
+        },
+      },
+      credentialProviderConfigurations: [
+        {
+          credentialProviderType: "GATEWAY_IAM_ROLE",
+        },
+      ],
+    })
+
     // Ensure proper creation order
     gatewayTarget.addDependency(gateway)
+    githubGatewayTarget.addDependency(gateway)
     gateway.node.addDependency(toolLambda)
+    gateway.node.addDependency(githubToolLambda)
     gateway.node.addDependency(this.machineClient)
     gateway.node.addDependency(gatewayRole)
 
-    // Store Gateway URL in SSM for runtime access
+    // Store AgentCore Gateway URL in SSM for AgentCore Runtime access
     new ssm.StringParameter(this, "GatewayUrlParam", {
       parameterName: `/${config.stack_name_base}/gateway_url`,
       stringValue: gateway.attrGatewayUrl,
@@ -705,6 +908,16 @@ export class BackendStack extends cdk.NestedStack {
     new cdk.CfnOutput(this, "ToolLambdaArn", {
       description: "ARN of the sample tool Lambda",
       value: toolLambda.functionArn,
+    })
+
+    new cdk.CfnOutput(this, "GitHubPatSecretArn", {
+      description: "Secrets Manager ARN for the GitHub PAT — run: aws secretsmanager put-secret-value --secret-id <arn> --secret-string 'ghp_...'",
+      value: githubPatSecret.secretArn,
+    })
+
+    new cdk.CfnOutput(this, "GitHubToolLambdaArn", {
+      description: "ARN of the GitHub tool Lambda",
+      value: githubToolLambda.functionArn,
     })
   }
 
@@ -776,6 +989,73 @@ export class BackendStack extends cdk.NestedStack {
 
     // Machine client must be created after resource server
     this.machineClient.node.addDependency(resourceServer)
+
+    // Store machine client secret in Secrets Manager for testing and external access.
+    // This secret is used by test scripts and potentially other external tools.
+    this.machineClientSecret = new secretsmanager.Secret(this, "MachineClientSecret", {
+      secretName: `/${config.stack_name_base}/machine_client_secret`,
+      secretStringValue: cdk.SecretValue.unsafePlainText(
+        this.machineClient.userPoolClientSecret.unsafeUnwrap()
+      ),
+      description: "Machine Client Secret for M2M authentication",
+    })
+
+
+  }
+
+  /**
+   * Builds the RuntimeNetworkConfiguration based on the config.yaml settings.
+   * When network_mode is "VPC", imports the user's existing VPC, subnets, and
+   * optionally security groups, then returns a VPC-based network configuration.
+   * When network_mode is "PUBLIC" (default), returns a public network configuration.
+   *
+   * @param config - The application configuration from config.yaml.
+   * @returns A RuntimeNetworkConfiguration for the AgentCore Runtime.
+   */
+  private buildNetworkConfiguration(config: AppConfig): agentcore.RuntimeNetworkConfiguration {
+    if (config.backend.network_mode === "VPC") {
+      const vpcConfig = config.backend.vpc
+      // vpc config is validated in ConfigManager, but guard here for type safety
+      if (!vpcConfig) {
+        throw new Error("backend.vpc configuration is required when network_mode is 'VPC'.")
+      }
+
+      // Import the user's existing VPC by ID.
+      // This performs a context lookup at synth time to resolve VPC attributes.
+      const vpc = ec2.Vpc.fromLookup(this, "ImportedVpc", {
+        vpcId: vpcConfig.vpc_id,
+      })
+
+      // Import the user-specified subnets by their IDs.
+      // These subnets must exist within the VPC specified above.
+      const subnets: ec2.ISubnet[] = vpcConfig.subnet_ids.map(
+        (subnetId: string, index: number) =>
+          ec2.Subnet.fromSubnetId(this, `ImportedSubnet${index}`, subnetId)
+      )
+
+      // Build the VPC config props for the AgentCore L2 construct.
+      // Security groups are optional — if not provided, the construct creates a default one.
+      const securityGroups =
+        vpcConfig.security_group_ids && vpcConfig.security_group_ids.length > 0
+          ? vpcConfig.security_group_ids.map(
+              (sgId: string, index: number) =>
+                ec2.SecurityGroup.fromSecurityGroupId(this, `ImportedSG${index}`, sgId)
+            )
+          : undefined
+
+      const vpcConfigProps: agentcore.VpcConfigProps = {
+        vpc: vpc,
+        vpcSubnets: {
+          subnets: subnets,
+        },
+        securityGroups: securityGroups,
+      }
+
+      return agentcore.RuntimeNetworkConfiguration.usingVpc(this, vpcConfigProps)
+    }
+
+    // Default: public network mode
+    return agentcore.RuntimeNetworkConfiguration.usingPublicNetwork()
   }
 
   /**
@@ -787,8 +1067,8 @@ export class BackendStack extends cdk.NestedStack {
    */
   private readDirRecursive(dirPath: string, prefix: string, output: Record<string, string>): void {
     for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
-      const fullPath = path.join(dirPath, entry.name)
-      const relativePath = path.join(prefix, entry.name)
+      const fullPath = path.join(dirPath, entry.name) // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+      const relativePath = path.join(prefix, entry.name) // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
 
       if (entry.isDirectory()) {
         // Skip __pycache__ directories

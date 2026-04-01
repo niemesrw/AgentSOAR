@@ -10,3 +10,11 @@
 # Contributors
 
 - Davide Merlin
+- Mingce Bi
+- Andrew Ang
+- Tesfagabir Meharizghi
+- Gauhar Bains
+- Meghana Ashok
+- Suren Gunturu
+- Samaneh Aminikhanghahi
+- Abhilash Balachandran

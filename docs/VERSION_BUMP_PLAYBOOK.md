@@ -2,14 +2,15 @@
 
 This document provides a checklist for bumping the version of FAST (Fullstack AgentCore Solution Template).
 
-## Files Requiring Manual Updates (6 files)
+## Files Requiring Manual Updates (7 files)
 
 1. **`VERSION`** - Root version file
 2. **`pyproject.toml`** - Python package version (`version = "X.Y.Z"`)
 3. **`frontend/package.json`** - Frontend package version (`"version": "X.Y.Z"`)
 4. **`infra-cdk/package.json`** - CDK package version (`"version": "X.Y.Z"`)
 5. **`infra-cdk/lib/fast-main-stack.ts`** - Stack description (`(vX.Y.Z)`)
-6. **`CHANGELOG.md`** - Add new version entry at top
+6. **`infra-terraform/VERSION`** - Terraform compatibility version (only update if TF is verified compatible with the new FAST version; see `infra-terraform/TF_VERSION_BUMP_PLAYBOOK.md`)
+7. **`CHANGELOG.md`** - Add new version entry at top
 
 ## Auto-Generated Files (DO NOT manually update)
 
@@ -20,7 +21,7 @@ This document provides a checklist for bumping the version of FAST (Fullstack Ag
 ## Procedure
 
 ### 1. Update Source Files
-Manually update the 6 files listed above with the new version number.
+Manually update the 7 files listed above with the new version number.
 
 ### 2. Regenerate Auto-Generated Files
 ```bash
@@ -48,19 +49,11 @@ cd frontend && npm run build # Test frontend build
 ```bash
 git add .
 git commit -m "Bump version to X.Y.Z"
-git push origin develop
-
-# Merge develop into main
-git checkout main
-git merge develop
 git push origin main
 
 # Create and push tag
 git tag vX.Y.Z
 git push origin vX.Y.Z
-
-# Return to develop
-git checkout develop
 ```
 
 ## Notes

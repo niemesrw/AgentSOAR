@@ -2,6 +2,8 @@
 
 This guide walks you through deploying the Fullstack AgentCore Solution Template (FAST) to AWS.
 
+> **Terraform alternative:** This guide covers CDK deployment. FAST also supports Terraform -- see the [Terraform Deployment Guide](TERRAFORM_DEPLOYMENT.md) for the Terraform deployment guide. We recommend choosing one infrastructure tool and deleting the other directory (`infra-cdk/` or `infra-terraform/`) from your fork to keep things clean.
+
 ## Prerequisites
 
 Before deploying, ensure you have:
@@ -63,6 +65,82 @@ FAST supports two deployment types for AgentCore Runtime. Set `deployment_type` 
 
 **ZIP packaging includes**: The `patterns/<your-pattern>/`, `gateway/`, and `tools/` directories are bundled together with dependencies from `requirements.txt`. This matches the `COPY` commands in the Docker deployment's Dockerfile.
 
+### VPC Deployment (Private Network)
+
+By default, the AgentCore Runtime runs in PUBLIC network mode with internet access. To deploy the runtime into an existing VPC for private network isolation, set `network_mode: VPC` in `infra-cdk/config.yaml` and provide your VPC details.
+
+#### What runs inside vs outside the VPC
+
+When VPC mode is enabled, the **AgentCore Runtime** (your agent code) runs inside your VPC's private subnets. All network calls the agent makes are subject to VPC networking rules and reach AWS services through VPC endpoints — the agent never makes direct internet calls.
+
+The following components run **outside** the VPC in AWS-managed infrastructure:
+
+- **Gateway tool Lambdas** — The agent calls the Gateway through the `bedrock-agent-runtime` VPC endpoint (private networking). The Gateway then invokes Lambda functions on AWS-managed infrastructure. The agent's network call stays private; only the Lambda execution happens outside the VPC.
+- **Code Interpreter** — The agent calls the Code Interpreter API through the `bedrock-agent-runtime` VPC endpoint. The sandbox execution happens in Bedrock's managed environment.
+- **Bedrock model invocations** — Model calls go through the `bedrock-runtime` VPC endpoint to Bedrock's managed infrastructure.
+- **Frontend (Amplify/CloudFront)** — Entirely separate, public-facing, and not part of the VPC deployment.
+
+In short: the agent's outbound network traffic stays on private AWS networking via VPC endpoints. The services it calls (Bedrock, Gateway, Code Interpreter) may execute on infrastructure outside the VPC, but the network path from the agent to those service APIs is private.
+
+#### Configuration
+
+```yaml
+backend:
+  pattern: strands-single-agent
+  deployment_type: docker
+  network_mode: VPC
+  vpc:
+    vpc_id: vpc-0abc1234def56789a
+    subnet_ids:
+      - subnet-aaaa1111bbbb2222c
+      - subnet-cccc3333dddd4444e
+    security_group_ids:  # Optional - a default SG is created if omitted
+      - sg-0abc1234def56789a
+```
+
+The `vpc_id` and `subnet_ids` fields are required. The `security_group_ids` field is optional — if omitted, the CDK construct will create a default security group for the runtime.
+
+#### Required VPC Endpoints
+
+When deploying in VPC mode, the runtime runs in private subnets without internet access. Your VPC must have the following VPC endpoints configured so the agent can reach the AWS services it depends on:
+
+| Endpoint | Service | Type |
+|----------|---------|------|
+| `com.amazonaws.{region}.bedrock-runtime` | Bedrock model invocation | Interface |
+| `com.amazonaws.{region}.bedrock-agent-runtime` | AgentCore Runtime | Interface |
+| `com.amazonaws.{region}.bedrock-agentcore` | AgentCore Identity (Token Vault) | Interface |
+| `com.amazonaws.{region}.bedrock-agentcore.gateway` | AgentCore Gateway (MCP tools) | Interface |
+| `com.amazonaws.{region}.ssm` | SSM Parameter Store | Interface |
+| `com.amazonaws.{region}.secretsmanager` | Secrets Manager | Interface |
+| `com.amazonaws.{region}.logs` | CloudWatch Logs | Interface |
+| `com.amazonaws.{region}.ecr.api` | ECR API (Docker deployment) | Interface |
+| `com.amazonaws.{region}.ecr.dkr` | ECR Docker (Docker deployment) | Interface |
+| `com.amazonaws.{region}.s3` | S3 (ZIP deployment, ECR layers) | Gateway |
+| `com.amazonaws.{region}.dynamodb` | DynamoDB (feedback table) | Gateway |
+| `com.amazonaws.{region}.xray` | X-Ray (OTel trace export) | Interface |
+
+Replace `{region}` with your deployment region (e.g. `us-east-1`).
+
+All interface endpoints must have private DNS enabled and must be associated with the same subnets and security groups that allow traffic from the AgentCore Runtime.
+
+#### Subnet Requirements
+
+- Use private subnets (no internet gateway route) for proper network isolation
+- Subnets should be in at least two Availability Zones for high availability
+- Subnets must have sufficient available IP addresses for the runtime ENIs
+
+#### NAT Gateway
+
+A NAT Gateway is **not required** for VPC mode. The agent authenticates with the AgentCore Gateway using the Token Vault OAuth2 Credential Provider, which retrieves tokens via the AgentCore Identity API. This API is reachable through the `bedrock-agent-runtime` VPC endpoint, so no outbound internet access is needed. All AWS service traffic (Bedrock, SSM, Secrets Manager, etc.) stays internal via VPC endpoints.
+
+> **Note:** If you add custom tools or integrations that make outbound internet calls, you will need a NAT Gateway in a public subnet with a `0.0.0.0/0` route from your private subnets.
+
+#### Security Group Configuration
+
+The CDK stack auto-creates a security group for the AgentCore Runtime. This same security group is typically applied to your VPC endpoints. You must add a self-referencing inbound rule to allow the runtime to reach the endpoints:
+
+- Protocol: TCP, Port: 443, Source: the security group itself
+
 ## Deployment Steps
 
 ### TL;DR version
@@ -75,6 +153,16 @@ cdk deploy
 cd ..
 python scripts/deploy-frontend.py
 ```
+
+### Deploy Without Local Tooling (via CodeBuild)
+
+If you don't have Node.js, Docker, or CDK installed locally, you can deploy entirely in the cloud using a temporary CodeBuild project. Requires only Python 3.8+ and AWS CLI:
+
+```bash
+python scripts/deploy-with-codebuild.py
+```
+
+See `scripts/README.md` for details and required IAM permissions.
 
 ### 1. Install Dependencies
 

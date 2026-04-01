@@ -89,7 +89,7 @@ Familiarize yourself with the project structure:
 
 ## Branching Strategy
 
-1. Create a branch from `develop` for your work:
+1. Create a branch from `main` for your work:
    ```bash
    git checkout -b feature/your-feature-name
    ```
@@ -127,7 +127,7 @@ Familiarize yourself with the project structure:
 
 1. **Update Documentation**: Ensure all documentation affected by your changes is updated
 2. **Run Tests**: Verify that your changes pass all tests
-3. **Create a Pull Request**: Submit a PR to the `develop` branch with a clear description of:
+3. **Create a Pull Request**: Submit a PR to the `main` branch on [GitHub](https://github.com/awslabs/fullstack-solution-template-for-agentcore) with a clear description of:
    - What the changes do
    - Why the changes are needed
    - Any relevant context or considerations

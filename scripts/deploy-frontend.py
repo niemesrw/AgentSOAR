@@ -40,6 +40,7 @@ CLEANUP_FILES: list = []
 
 # --- Logging helpers ---
 
+
 def log_info(message: str) -> None:
     """Print an info message."""
     print(f"ℹ {message}")
@@ -62,6 +63,7 @@ def log_warning(message: str) -> None:
 
 # --- Utility functions ---
 
+
 def cleanup() -> None:
     """Remove temporary files created during deployment."""
     for filepath in CLEANUP_FILES:
@@ -74,7 +76,7 @@ def run_command(
     command: list,
     capture_output: bool = True,
     check: bool = True,
-    cwd: Optional[str] = None
+    cwd: Optional[str] = None,
 ) -> subprocess.CompletedProcess:
     """
     Execute a command securely via subprocess.
@@ -95,7 +97,7 @@ def run_command(
         check=check,
         shell=False,
         timeout=300,
-        cwd=cwd
+        cwd=cwd,
     )
 
 
@@ -122,10 +124,7 @@ def parse_config_yaml(config_path: Path) -> Dict[str, str]:
     Returns:
         Dictionary with stack_name_base and pattern values
     """
-    config = {
-        "stack_name_base": "",
-        "pattern": "strands-single-agent"
-    }
+    config = {"stack_name_base": "", "pattern": "strands-single-agent"}
 
     if not config_path.exists():
         return config
@@ -133,14 +132,14 @@ def parse_config_yaml(config_path: Path) -> Dict[str, str]:
     content = config_path.read_text()
 
     # Extract stack_name_base
-    match = re.search(r'^stack_name_base:\s*(\S+)', content, re.MULTILINE)
+    match = re.search(r"^stack_name_base:\s*(\S+)", content, re.MULTILINE)
     if match:
-        config["stack_name_base"] = match.group(1).strip('"\'')
+        config["stack_name_base"] = match.group(1).strip("\"'")
 
     # Extract pattern from backend section
-    match = re.search(r'pattern:\s*(\S+)', content)
+    match = re.search(r"pattern:\s*(\S+)", content)
     if match:
-        config["pattern"] = match.group(1).split('#')[0].strip().strip('"\'')
+        config["pattern"] = match.group(1).split("#")[0].strip().strip("\"'")
 
     return config
 
@@ -156,7 +155,7 @@ def get_file_size_human(filepath: str) -> str:
         Human-readable size string (e.g., "1.5MB")
     """
     size = os.path.getsize(filepath)
-    for unit in ['B', 'KB', 'MB', 'GB']:
+    for unit in ["B", "KB", "MB", "GB"]:
         if size < 1024:
             return f"{size:.1f}{unit}"
         size /= 1024
@@ -164,6 +163,7 @@ def get_file_size_human(filepath: str) -> str:
 
 
 # --- AWS CLI wrappers ---
+
 
 def get_stack_outputs(stack_name: str) -> Dict[str, str]:
     """
@@ -175,19 +175,25 @@ def get_stack_outputs(stack_name: str) -> Dict[str, str]:
     Returns:
         Dictionary mapping output keys to values
     """
-    result = run_command([
-        "aws", "cloudformation", "describe-stacks",
-        "--stack-name", stack_name,
-        "--output", "json"
-    ])
+    result = run_command(
+        [
+            "aws",
+            "cloudformation",
+            "describe-stacks",
+            "--stack-name",
+            stack_name,
+            "--output",
+            "json",
+        ]
+    )
 
     stack_data = json.loads(result.stdout)
-    stacks = stack_data.get('Stacks', [])
+    stacks = stack_data.get("Stacks", [])
     if not stacks:
         raise ValueError(f"Stack '{stack_name}' not found or has no data")
-    outputs = stacks[0].get('Outputs', [])
+    outputs = stacks[0].get("Outputs", [])
 
-    return {o['OutputKey']: o['OutputValue'] for o in outputs}
+    return {o["OutputKey"]: o["OutputValue"] for o in outputs}
 
 
 def get_stack_region(stack_name: str) -> str:
@@ -200,19 +206,25 @@ def get_stack_region(stack_name: str) -> str:
     Returns:
         AWS region string
     """
-    result = run_command([
-        "aws", "cloudformation", "describe-stacks",
-        "--stack-name", stack_name,
-        "--output", "json"
-    ])
+    result = run_command(
+        [
+            "aws",
+            "cloudformation",
+            "describe-stacks",
+            "--stack-name",
+            stack_name,
+            "--output",
+            "json",
+        ]
+    )
 
     stack_data = json.loads(result.stdout)
-    stacks = stack_data.get('Stacks', [])
+    stacks = stack_data.get("Stacks", [])
     if not stacks:
         raise ValueError(f"Stack '{stack_name}' not found or has no data")
-    stack_arn = stacks[0]['StackId']
+    stack_arn = stacks[0]["StackId"]
     # ARN format: arn:aws:cloudformation:region:account:stack/name/id
-    arn_parts = stack_arn.split(':')
+    arn_parts = stack_arn.split(":")
     if len(arn_parts) < 4:
         raise ValueError(f"Invalid stack ARN format: {stack_arn}")
     return arn_parts[3]
@@ -227,11 +239,9 @@ def upload_to_s3(local_path: str, bucket: str, key: str) -> None:
         bucket: S3 bucket name
         key: S3 object key
     """
-    run_command([
-        "aws", "s3", "cp", local_path,
-        f"s3://{bucket}/{key}",
-        "--no-progress"
-    ])
+    run_command(
+        ["aws", "s3", "cp", local_path, f"s3://{bucket}/{key}", "--no-progress"]
+    )
 
 
 def start_amplify_deployment(app_id: str, branch: str, source_url: str) -> Dict:
@@ -246,13 +256,21 @@ def start_amplify_deployment(app_id: str, branch: str, source_url: str) -> Dict:
     Returns:
         Deployment response as dictionary
     """
-    result = run_command([
-        "aws", "amplify", "start-deployment",
-        "--app-id", app_id,
-        "--branch-name", branch,
-        "--source-url", source_url,
-        "--output", "json"
-    ])
+    result = run_command(
+        [
+            "aws",
+            "amplify",
+            "start-deployment",
+            "--app-id",
+            app_id,
+            "--branch-name",
+            branch,
+            "--source-url",
+            source_url,
+            "--output",
+            "json",
+        ]
+    )
 
     return json.loads(result.stdout)
 
@@ -269,15 +287,23 @@ def get_amplify_job_status(app_id: str, branch: str, job_id: str) -> str:
     Returns:
         Job status string
     """
-    result = run_command([
-        "aws", "amplify", "get-job",
-        "--app-id", app_id,
-        "--branch-name", branch,
-        "--job-id", job_id,
-        "--output", "json"
-    ])
+    result = run_command(
+        [
+            "aws",
+            "amplify",
+            "get-job",
+            "--app-id",
+            app_id,
+            "--branch-name",
+            branch,
+            "--job-id",
+            job_id,
+            "--output",
+            "json",
+        ]
+    )
 
-    return json.loads(result.stdout)['job']['summary']['status']
+    return json.loads(result.stdout)["job"]["summary"]["status"]
 
 
 def get_amplify_app_domain(app_id: str) -> str:
@@ -290,24 +316,32 @@ def get_amplify_app_domain(app_id: str) -> str:
     Returns:
         Default domain string
     """
-    result = run_command([
-        "aws", "amplify", "get-app",
-        "--app-id", app_id,
-        "--query", "app.defaultDomain",
-        "--output", "text"
-    ])
+    result = run_command(
+        [
+            "aws",
+            "amplify",
+            "get-app",
+            "--app-id",
+            app_id,
+            "--query",
+            "app.defaultDomain",
+            "--output",
+            "text",
+        ]
+    )
 
     return result.stdout.strip()
 
 
 # --- Main deployment logic ---
 
+
 def generate_aws_exports(
     stack_name: str,
     outputs: Dict[str, str],
     region: str,
     pattern: str,
-    frontend_dir: Path
+    frontend_dir: Path,
 ) -> None:
     """
     Generate aws-exports.json configuration file.
@@ -319,7 +353,13 @@ def generate_aws_exports(
         pattern: Agent pattern name
         frontend_dir: Path to frontend directory
     """
-    required = ["CognitoClientId", "CognitoUserPoolId", "AmplifyUrl", "RuntimeArn", "FeedbackApiUrl"]
+    required = [
+        "CognitoClientId",
+        "CognitoUserPoolId",
+        "AmplifyUrl",
+        "RuntimeArn",
+        "FeedbackApiUrl",
+    ]
     missing = [k for k in required if k not in outputs]
 
     if missing:
@@ -327,15 +367,15 @@ def generate_aws_exports(
 
     aws_exports = {
         "authority": f"https://cognito-idp.{region}.amazonaws.com/{outputs['CognitoUserPoolId']}",
-        "client_id": outputs['CognitoClientId'],
-        "redirect_uri": outputs['AmplifyUrl'],
-        "post_logout_redirect_uri": outputs['AmplifyUrl'],
+        "client_id": outputs["CognitoClientId"],
+        "redirect_uri": outputs["AmplifyUrl"],
+        "post_logout_redirect_uri": outputs["AmplifyUrl"],
         "response_type": "code",
         "scope": "email openid profile",
         "automaticSilentRenew": True,
-        "agentRuntimeArn": outputs['RuntimeArn'],
+        "agentRuntimeArn": outputs["RuntimeArn"],
         "awsRegion": region,
-        "feedbackApiUrl": outputs['FeedbackApiUrl'],
+        "feedbackApiUrl": outputs["FeedbackApiUrl"],
         "agentPattern": pattern,
     }
 
@@ -358,9 +398,7 @@ def create_deployment_zip(build_dir: Path, output_path: Path) -> None:
     """
     # shutil.make_archive adds .zip automatically
     shutil.make_archive(
-        str(output_path.with_suffix('')),
-        'zip',
-        root_dir=str(build_dir)
+        str(output_path.with_suffix("")), "zip", root_dir=str(build_dir)
     )
 
 
@@ -399,11 +437,13 @@ def main() -> int:
     except subprocess.CalledProcessError:
         log_error("AWS credentials not configured or invalid")
         log_info("Run 'aws configure' to set up your AWS credentials")
-        log_info("Or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables")
+        log_info(
+            "Or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables"
+        )
         return 1
 
     # Get stack name
-    stack_name = sys.argv[1] if len(sys.argv) > 1 else os.environ.get('STACK_NAME')
+    stack_name = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("STACK_NAME")
 
     if not stack_name:
         config = parse_config_yaml(config_path)
@@ -463,7 +503,10 @@ def main() -> int:
     node_modules = frontend_dir / "node_modules"
     package_json = frontend_dir / "package.json"
 
-    if not node_modules.exists() or package_json.stat().st_mtime > node_modules.stat().st_mtime:
+    if (
+        not node_modules.exists()
+        or package_json.stat().st_mtime > node_modules.stat().st_mtime
+    ):
         log_info("Installing dependencies...")
         try:
             run_command(["npm", "install"], capture_output=False)
@@ -520,7 +563,7 @@ def main() -> int:
 
     try:
         deployment = start_amplify_deployment(app_id, BRANCH_NAME, source_url)
-        job_id = deployment['jobSummary']['jobId']
+        job_id = deployment["jobSummary"]["jobId"]
         log_success(f"Deployment initiated (Job ID: {job_id})")
     except subprocess.CalledProcessError as e:
         log_error(f"Amplify deployment failed: {e.stderr}")

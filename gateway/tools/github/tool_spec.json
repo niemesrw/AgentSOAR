@@ -1,0 +1,99 @@
+[
+  {
+    "name": "github_create_issue",
+    "description": "Create a new GitHub issue in a repository. Use this to log security incidents, track gaps in playbooks, or document findings.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "owner": { "type": "string", "description": "Repository owner (user or org)" },
+        "repo": { "type": "string", "description": "Repository name" },
+        "title": { "type": "string", "description": "Issue title" },
+        "body": { "type": "string", "description": "Issue body (markdown supported)" },
+        "labels": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Optional list of label names to apply"
+        }
+      },
+      "required": ["owner", "repo", "title", "body"]
+    }
+  },
+  {
+    "name": "github_update_issue",
+    "description": "Update an existing GitHub issue — change its state (open/closed), labels, or body.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "owner": { "type": "string", "description": "Repository owner" },
+        "repo": { "type": "string", "description": "Repository name" },
+        "issue_number": { "type": "integer", "description": "Issue number to update" },
+        "state": { "type": "string", "description": "New state: 'open' or 'closed'" },
+        "labels": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Replace the issue's labels with this list"
+        },
+        "body": { "type": "string", "description": "New body content for the issue" }
+      },
+      "required": ["owner", "repo", "issue_number"]
+    }
+  },
+  {
+    "name": "github_add_comment",
+    "description": "Add a comment to a GitHub issue or pull request. Use this to append investigation notes, status updates, or resolution details.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "owner": { "type": "string", "description": "Repository owner" },
+        "repo": { "type": "string", "description": "Repository name" },
+        "issue_number": { "type": "integer", "description": "Issue or PR number" },
+        "body": { "type": "string", "description": "Comment body (markdown supported)" }
+      },
+      "required": ["owner", "repo", "issue_number", "body"]
+    }
+  },
+  {
+    "name": "github_list_issues",
+    "description": "List open or closed issues in a repository. Optionally filter by label.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "owner": { "type": "string", "description": "Repository owner" },
+        "repo": { "type": "string", "description": "Repository name" },
+        "state": { "type": "string", "description": "'open', 'closed', or 'all' (default: open)" },
+        "labels": { "type": "string", "description": "Comma-separated label names to filter by (optional)" }
+      },
+      "required": ["owner", "repo"]
+    }
+  },
+  {
+    "name": "github_create_pr",
+    "description": "Create a pull request. Use this to propose remediation changes, playbook updates, or configuration fixes.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "owner": { "type": "string", "description": "Repository owner" },
+        "repo": { "type": "string", "description": "Repository name" },
+        "title": { "type": "string", "description": "PR title" },
+        "body": { "type": "string", "description": "PR description (markdown supported)" },
+        "head": { "type": "string", "description": "Branch containing changes (e.g. 'fix/block-malicious-ip')" },
+        "base": { "type": "string", "description": "Branch to merge into (e.g. 'main')" }
+      },
+      "required": ["owner", "repo", "title", "body", "head", "base"]
+    }
+  },
+  {
+    "name": "github_search_issues",
+    "description": "Search GitHub issues and PRs across repositories using GitHub's search syntax. Useful for finding related incidents or existing playbook gaps.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "GitHub search query (e.g. 'lateral movement repo:niemesrw/AgentSOAR is:open')"
+        }
+      },
+      "required": ["query"]
+    }
+  }
+]

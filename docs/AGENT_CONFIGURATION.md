@@ -114,16 +114,20 @@ Create your agent code that:
 **Example Structure**:
 
 ```python
-from bedrock_agentcore.runtime import BedrockAgentCoreApp
+from bedrock_agentcore.runtime import BedrockAgentCoreApp, RequestContext
+from utils.auth import extract_user_id_from_context
 
 app = BedrockAgentCoreApp()
 
 @app.entrypoint
-async def agent_handler(payload):
+async def agent_handler(payload, context: RequestContext):
     """Main entrypoint for the agent"""
     user_query = payload.get("prompt")
-    user_id = payload.get("userId")
     session_id = payload.get("runtimeSessionId")
+
+    # Extract user ID securely from the validated JWT token
+    # instead of trusting the payload body (which could be manipulated)
+    user_id = extract_user_id_from_context(context)
 
     # Your agent logic here
     # ...
