@@ -323,9 +323,11 @@ export class BackendStack extends cdk.NestedStack {
     )
 
     // Add Secrets Manager access for OAuth2
-    // AgentCore Runtime needs to read two secrets:
+    // AgentCore Runtime needs to read three secrets:
     // 1. Machine client secret (created by CDK)
-    // 2. Token Vault OAuth2 secret (created by AgentCore Identity)
+    // 2. Gateway auth Token Vault secret (created by AgentCore Identity for M2M gateway auth)
+    // 3. GitHub OAuth Token Vault secret (created by AgentCore Identity for USER_FEDERATION flow)
+    // AgentCore Identity names secrets: bedrock-agentcore-identity!default/oauth2/<provider-name>
     agentRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "SecretsManagerOAuth2Access",
@@ -334,6 +336,7 @@ export class BackendStack extends cdk.NestedStack {
         resources: [
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:/${config.stack_name_base}/machine_client_secret*`,
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:bedrock-agentcore-identity!default/oauth2/${config.stack_name_base}-runtime-gateway-auth*`,
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:bedrock-agentcore-identity!default/oauth2/${config.stack_name_base}-github*`,
         ],
       })
     )
