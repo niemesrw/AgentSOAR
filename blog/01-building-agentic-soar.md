@@ -109,6 +109,25 @@ Before any SOAR logic, you need a running stack. Here's exactly what it took.
 | Python 3.11+ | |
 | [OrbStack](https://orbstack.dev/) | Lightweight Docker Desktop replacement for Mac. Docker Desktop also works. CDK needs a container runtime to build Lambda layers and the agent image. |
 | AWS CLI | Configured with a named profile |
+| [AgentCore MCP Server](https://github.com/awslabs/amazon-bedrock-agentcore-mcp-server) | Optional but recommended — gives your AI coding assistant live access to AgentCore docs. See config below. |
+
+**AgentCore MCP Server** (add to your Claude Code / Cursor MCP config):
+
+```json
+{
+  "mcpServers": {
+    "bedrock-agentcore-mcp-server": {
+      "command": "uvx",
+      "args": ["awslabs.amazon-bedrock-agentcore-mcp-server@latest"],
+      "env": { "FASTMCP_LOG_LEVEL": "ERROR" },
+      "disabled": false,
+      "autoApprove": ["search_agentcore_docs", "fetch_agentcore_doc"]
+    }
+  }
+}
+```
+
+This lets Claude Code search and fetch AgentCore documentation inline while you're building — no context-switching to browser tabs.
 
 One non-obvious thing: **macOS native containers won't work here**. AgentCore Runtime requires a Linux ARM64 image. OrbStack runs Linux containers natively on Apple Silicon — no Rosetta, no cross-compilation needed.
 
