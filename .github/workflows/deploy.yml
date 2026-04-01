@@ -1,0 +1,75 @@
+name: Deploy AgentSOAR
+
+on:
+  workflow_dispatch:
+    inputs:
+      stack_name_base:
+        description: "CDK stack name base (default: agentsoar)"
+        required: false
+        default: "agentsoar"
+      pattern:
+        description: "Agent pattern (default: agui-strands-agent)"
+        required: false
+        default: "agui-strands-agent"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install CDK dependencies
+        run: cd infra-cdk && npm ci
+
+      - name: Configure AWS credentials (management account OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::982682372189:role/GitHubActionsRole
+          aws-region: us-east-1
+
+      - name: Assume role in blanxlait-ai account
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::057122451218:role/GitHubDeployRole
+          aws-region: us-east-1
+          role-chaining: true
+
+      - name: Patch config.yaml for this deployment
+        run: |
+          sed -i "s/^stack_name_base:.*/stack_name_base: ${{ github.event.inputs.stack_name_base }}/" infra-cdk/config.yaml
+          sed -i "s/^  pattern:.*$/  pattern: ${{ github.event.inputs.pattern }}/" infra-cdk/config.yaml
+          echo "config.yaml after patching:"
+          cat infra-cdk/config.yaml
+
+      - name: CDK bootstrap
+        run: cd infra-cdk && npx cdk bootstrap aws://057122451218/us-east-1
+
+      - name: CDK deploy
+        run: cd infra-cdk && npx cdk deploy --all --require-approval never --concurrency 3
+
+      - name: Print GitHub PAT secret ARN
+        run: |
+          echo "==================================================="
+          echo "Deploy complete. To enable GitHub tools, populate the PAT:"
+          echo ""
+          SECRET_ARN=$(aws cloudformation describe-stacks \
+            --stack-name "${{ github.event.inputs.stack_name_base }}-backend" \
+            --query "Stacks[0].Outputs[?OutputKey=='GitHubPatSecretArn'].OutputValue" \
+            --output text 2>/dev/null || echo "Run: aws cloudformation describe-stacks to find GitHubPatSecretArn")
+          echo "  aws secretsmanager put-secret-value \\"
+          echo "    --secret-id $SECRET_ARN \\"
+          echo "    --secret-string 'ghp_your_token_here'"
+          echo "==================================================="
