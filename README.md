@@ -1,6 +1,6 @@
 # AgentSOAR
 
-> **Follow the build:** [Building an Agentic SOAR on Amazon Bedrock AgentCore](https://ryanniemes.substack.com) *(post coming soon)*
+> **Follow the build on Substack:** [ryanniemes.substack.com](https://ryanniemes.substack.com) *(series coming soon)*
 
 AgentSOAR is a fork of the [AWS FAST template](https://github.com/awslabs/fullstack-solution-template-for-agentcore) being transformed into a modern **agentic SOAR (Security Orchestration, Automation, and Response)** platform on Amazon Bedrock AgentCore. The goal is to show — step by step via a public blog — how to take a production-ready fullstack AgentCore template and wire it into real security workflows: alert triage, playbook execution, threat enrichment, and case management.
 
@@ -8,7 +8,7 @@ If you're here from the blog, the `main` branch reflects the current state of th
 
 ---
 
-# Fullstack AgentCore Solution Template (FAST)
+## Fullstack AgentCore Solution Template (FAST)
 
 _Author's note: for the official name for this solution is the "Fullstack Solution Template for Agentcore" but it is referred to throughout this code base as FAST for convenience._
 
