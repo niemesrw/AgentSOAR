@@ -33,7 +33,7 @@ SYSTEM_PROMPT = (
 
 def _build_model() -> BedrockModel:
     return BedrockModel(
-        model_id="us.anthropic.claude-sonnet-4-5-20250929-v1:0", temperature=0.1
+        model_id="global.anthropic.claude-sonnet-4-6", temperature=0.1
     )
 
 
