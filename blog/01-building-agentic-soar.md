@@ -155,11 +155,27 @@ echo 'export PATH="$PATH:$HOME/.orbstack/bin"' >> ~/.zshrc
 
 Since `admin_user_email` is `null` in the committed config, no Cognito user is auto-created. Create one manually in the [Cognito console](https://console.aws.amazon.com/cognito/) — find your user pool, create a user, mark email as verified. You'll get a temporary password to change on first login.
 
+### Choosing the right model and agent pattern
+
+The default FAST config ships with `strands-single-agent` and `us.anthropic.claude-sonnet-4-5-20250929-v1:0`. Neither was right for us.
+
+**Model**: The `us.*` cross-region inference prefix caused an `AccessDeniedException` on `ConverseStream` immediately after deploy. Checking `aws bedrock list-inference-profiles` showed both `us.anthropic.claude-sonnet-4-6` and `global.anthropic.claude-sonnet-4-6` as ACTIVE. We switched to `global.anthropic.claude-sonnet-4-6` — the latest model, widest availability, no access issues.
+
+**Agent pattern**: FAST ships multiple patterns. The `agui-strands-agent` pattern produces native AG-UI SSE events, which the frontend parses with the AG-UI client for real-time streaming of every tool call and reasoning step. The `strands-single-agent` pattern uses a simpler response format with a different frontend parser. For a SOAR dashboard where analysts watch the agent work in real time, AG-UI is the right choice — you want to see every tool invocation as it happens, not a final answer.
+
+Switching is a one-line change in `infra-cdk/config.yaml`:
+
+```yaml
+pattern: agui-strands-agent
+```
+
+CDK re-builds and pushes a new container image on the next deploy. The Runtime update took about 8 seconds.
+
 ### It works
 
 ![AgentSOAR running after first deploy](images/agentsoar-first-deploy.png)
 
-The baseline FAST chat UI — logged in, agent responding. From here, we start turning it into a SOAR.
+The baseline FAST chat UI — logged in, agent running on Claude Sonnet 4.6 via the AG-UI pattern. From here, we start turning it into a SOAR.
 
 ---
 
@@ -179,6 +195,7 @@ The baseline FAST chat UI — logged in, agent responding. From here, we start t
 - **OrbStack PATH issue**: CDK spawns Docker as a subprocess and inherits the shell PATH at launch time. If Docker wasn't in PATH when you opened the terminal, CDK can't find it even after OrbStack starts. Prefix with `PATH=...` or restart the terminal.
 - **No personal data in config**: Committing `admin_user_email` to a public repo is a bad idea — Copilot caught it in code review. Keep it local.
 - **`cdk deploy` does more than you think**: AgentCore Runtime, Gateway, Memory, OAuth2 credential provider Lambda, Cognito, CloudFront, Amplify — all in one command. The FAST template earns its name.
+- **Default model and pattern aren't production-ready**: The shipped defaults (`strands-single-agent`, `us.anthropic.claude-sonnet-4-5`) caused an immediate `AccessDeniedException`. Check `list-inference-profiles` for what's actually ACTIVE in your account, use the `global.*` prefix for best availability, and pick the agent pattern that matches your frontend parser before first deploy.
 
 ---
 
