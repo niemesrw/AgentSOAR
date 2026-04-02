@@ -1,0 +1,86 @@
+[
+  {
+    "name": "get_guardduty_findings",
+    "description": "List AWS GuardDuty findings filtered by severity, region, and/or account. Returns finding IDs and summary information for detected threats.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "severity": {
+          "type": "string",
+          "description": "Minimum severity level to filter findings. One of: LOW (1-3.9), MEDIUM (4-6.9), HIGH (7-8.9), CRITICAL (9-10). Defaults to MEDIUM.",
+          "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+        },
+        "region": {
+          "type": "string",
+          "description": "AWS region to query GuardDuty findings in (e.g. us-east-1). Defaults to the Lambda execution region."
+        },
+        "account_id": {
+          "type": "string",
+          "description": "AWS account ID to scope findings to. Optional — defaults to the current account."
+        },
+        "max_results": {
+          "type": "integer",
+          "description": "Maximum number of findings to return (1-50, default 20)."
+        }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "describe_guardduty_finding",
+    "description": "Retrieve a detailed, human-readable explanation of a single GuardDuty finding including the threat type, affected resources, observed behavior, and recommended next steps.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "finding_id": {
+          "type": "string",
+          "description": "The unique identifier of the GuardDuty finding to describe."
+        },
+        "region": {
+          "type": "string",
+          "description": "AWS region where the finding exists. Defaults to the Lambda execution region."
+        }
+      },
+      "required": ["finding_id"]
+    }
+  },
+  {
+    "name": "archive_guardduty_finding",
+    "description": "Archive (suppress) one or more GuardDuty findings so they no longer appear in the active findings list. CAUTION: this is a write action that permanently suppresses findings — only use when a finding is a confirmed false positive or has been fully remediated.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "finding_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of GuardDuty finding IDs to archive."
+        },
+        "region": {
+          "type": "string",
+          "description": "AWS region where the findings exist. Defaults to the Lambda execution region."
+        }
+      },
+      "required": ["finding_ids"]
+    }
+  },
+  {
+    "name": "triage_guardduty_finding",
+    "description": "Run an automated triage playbook against a GuardDuty finding. Classifies the finding, enriches it with contextual resource information, assesses risk, and returns a structured remediation recommendation.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "finding_id": {
+          "type": "string",
+          "description": "The unique identifier of the GuardDuty finding to triage."
+        },
+        "region": {
+          "type": "string",
+          "description": "AWS region where the finding exists. Defaults to the Lambda execution region."
+        }
+      },
+      "required": ["finding_id"]
+    }
+  }
+]

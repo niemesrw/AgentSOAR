@@ -5,7 +5,8 @@
 - Always create a PR after committing — never push directly to `main`.
 - Keep PRs small and focused (one logical change per PR).
 - Include the blog post update in the same PR as the code it documents.
-- Before pushing Python changes, run `ruff check && ruff format --check` (install via `brew install ruff`).
+- Always use `uv` to run Python tools and scripts (e.g. `uv run pytest`, `uv run ruff check`). Never invoke `python`, `pip`, or `pytest` directly.
+- Before pushing Python changes, run `uv run ruff check && uv run ruff format --check`.
 
 ## Project Context
 
