@@ -274,7 +274,7 @@ export class BackendStack extends cdk.NestedStack {
       new iam.PolicyStatement({
         sid: "SSMParameterAccess",
         effect: iam.Effect.ALLOW,
-        actions: ["ssm:GetParameter", "ssm:GetParameters", "ssm:DeleteParameter"],
+        actions: ["ssm:GetParameter", "ssm:GetParameters", "ssm:PutParameter", "ssm:DeleteParameter"],
         resources: [
           `arn:aws:ssm:${this.region}:${this.account}:parameter/${config.stack_name_base}/*`,
         ],
@@ -295,9 +295,32 @@ export class BackendStack extends cdk.NestedStack {
       })
     )
 
+    // AgentCore Identity access for M2M gateway auth (@requires_access_token decorator).
+    // These are still needed for the Gateway MCP client — the decorator calls AgentCore
+    // Identity APIs to fetch the machine token from the token vault.
+    agentRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "AgentCoreIdentityM2MAccess",
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "bedrock-agentcore:GetWorkloadAccessToken",
+          "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
+          "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
+          "bedrock-agentcore:GetOauth2CredentialProvider",
+          "bedrock-agentcore:GetResourceOauth2Token",
+        ],
+        resources: [
+          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:oauth2-credential-provider/*`,
+          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:token-vault/*`,
+          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/*`,
+        ],
+      })
+    )
+
     // Add Secrets Manager access for the runtime:
     // 1. Machine client secret (for M2M gateway auth via @requires_access_token)
-    // 2. Per-provider OAuth credentials (clientId + clientSecret) for third-party integrations
+    // 2. Token Vault secret created by AgentCore Identity for the M2M gateway provider
+    // 3. Per-provider OAuth credentials (clientId + clientSecret) for third-party integrations
     agentRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "SecretsManagerAccess",
@@ -305,6 +328,7 @@ export class BackendStack extends cdk.NestedStack {
         actions: ["secretsmanager:GetSecretValue"],
         resources: [
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:/${config.stack_name_base}/machine_client_secret*`,
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:bedrock-agentcore-identity!default/oauth2/${config.stack_name_base}-runtime-gateway-auth*`,
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:/${config.stack_name_base}/oauth-creds/*`,
         ],
       })
@@ -602,7 +626,6 @@ export class BackendStack extends cdk.NestedStack {
       timeout: cdk.Duration.seconds(15),
       environment: {
         STACK_NAME: config.stack_name_base,
-        AWS_DEFAULT_REGION: this.region,
       },
       logGroup: new logs.LogGroup(this, "OAuthCallbackLambdaLogGroup", {
         logGroupName: `/aws/lambda/${config.stack_name_base}-oauth-callback`,

@@ -28,7 +28,7 @@ from botocore.exceptions import ClientError
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-_REGION = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+_REGION = os.environ.get("AWS_REGION", "us-east-1")
 _STACK = os.environ.get("STACK_NAME", "AgentSOAR")
 _ssm = boto3.client("ssm", region_name=_REGION)
 _sm = boto3.client("secretsmanager", region_name=_REGION)
