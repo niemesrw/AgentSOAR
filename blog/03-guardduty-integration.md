@@ -297,7 +297,88 @@ below.
   automated response.
 - **Findings store** — push ingested findings into DynamoDB so the agent can answer
   "what came in while I was away?" with a `list_guardduty_findings_since` tool.
-- **Cross-account GuardDuty API calls** — `get_guardduty_findings` currently queries
-  the account it runs in. A cross-account role assumption is needed to query the
-  Security account's aggregated findings.
+- ~~**Cross-account GuardDuty API calls**~~ — Done. See below.
 - **Extend triage playbooks** with account-specific runbooks loaded from SSM.
+
+## Cross-account role assumption pattern
+
+A key architectural decision was where to run the GuardDuty Lambda. The options were:
+
+- **Run Lambda in the Security account** — direct access, but splits AgentSOAR's
+  infrastructure across accounts and turns the Security account into an application host.
+- **Cross-account role assumption (STS AssumeRole)** — Lambda stays in the AI account,
+  assumes a read-only role in the Security account just for data access.
+
+We chose Option B. The Security account owns the data; AgentSOAR owns the automation.
+IAM bridges the gap. This is the right pattern for any AWS service where data lives in
+a different account than the application consuming it.
+
+### The reusable helper
+
+`_get_client(service, region, role_arn=None)` in `guardduty_lambda.py` is designed to
+be copied to any future Lambda tool group:
+
+```python
+def _get_client(service: str, region: str, role_arn: str | None = None) -> Any:
+    if role_arn:
+        creds = boto3.client("sts").assume_role(
+            RoleArn=role_arn,
+            RoleSessionName="agentsoar",
+            ExternalId="agentsoar",   # confused-deputy protection
+            DurationSeconds=900,
+        )["Credentials"]
+        return boto3.Session(
+            aws_access_key_id=creds["AccessKeyId"],
+            aws_secret_access_key=creds["SecretAccessKey"],
+            aws_session_token=creds["SessionToken"],
+        ).client(service, region_name=region)
+    return boto3.client(service, region_name=region)
+```
+
+When `SECURITY_ACCOUNT_ROLE_ARN` is not set the Lambda falls back to its own
+execution role — same code works in single-account and multi-account deployments.
+
+### The target account role
+
+One IAM role per target account (`AgentSOARCrossAccountRole`), created once via CLI:
+
+```bash
+# Trust policy — AI account with ExternalId guard
+aws iam create-role \
+  --role-name AgentSOARCrossAccountRole \
+  --assume-role-policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Principal": {"AWS": "arn:aws:iam::<AI_ACCOUNT_ID>:root"},
+      "Action": "sts:AssumeRole",
+      "Condition": {"StringEquals": {"sts:ExternalId": "agentsoar"}}
+    }]
+  }'
+
+# Add permissions for the services AgentSOAR needs to read
+aws iam put-role-policy \
+  --role-name AgentSOARCrossAccountRole \
+  --policy-name GuardDutyRead \
+  --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Action": ["guardduty:ListDetectors","guardduty:ListFindings",
+                 "guardduty:GetFindings","guardduty:ArchiveFindings"],
+      "Resource": "arn:aws:guardduty:*:<SECURITY_ACCOUNT_ID>:detector/*"
+    }]
+  }'
+```
+
+Adding CloudTrail, Security Hub, or any other service to the pattern is two steps:
+add the actions to the role policy, add the corresponding `_get_client` call in the
+Lambda.
+
+### What the smoke test returned
+
+With cross-account role assumption in place, `get_guardduty_findings` returned **17
+org-wide findings** from the Security account's delegated admin detector — including
+real behavioral detections against CDK deploy roles and SSO sessions, plus the sample
+findings generated earlier. The full triage report ran successfully against a live
+finding in under 200ms end-to-end through the Gateway.
