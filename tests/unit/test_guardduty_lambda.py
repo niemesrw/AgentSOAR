@@ -219,7 +219,7 @@ class TestDescribeGuarddutyFinding:
             "AccessKeyDetails": {
                 "UserName": "testuser",
                 "UserType": "IAMUser",
-                "AccessKeyId": "AKIAIOSFODNN7EXAMPLE",
+                "AccessKeyId": "AKIAIOSFODNN7EXAMPLE",  # pragma: allowlist secret
             },
         }
         mock_boto3.get_findings.return_value = {"Findings": [finding]}
