@@ -712,7 +712,7 @@ export class BackendStack extends cdk.NestedStack {
       }),
     })
 
-    // GuardDuty read & archive permissions for the tool Lambda
+    // GuardDuty read permissions (account-scoped, no specific detector ARN needed for List)
     guarddutyLambda.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
@@ -720,9 +720,17 @@ export class BackendStack extends cdk.NestedStack {
           "guardduty:ListDetectors",
           "guardduty:ListFindings",
           "guardduty:GetFindings",
-          "guardduty:ArchiveFindings",
         ],
-        resources: ["*"],
+        resources: [`arn:aws:guardduty:*:${this.account}:detector/*`],
+      })
+    )
+    // ArchiveFindings is a destructive write — intentionally on a separate statement
+    // so it can be removed independently if agent write access is revoked.
+    guarddutyLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["guardduty:ArchiveFindings"],
+        resources: [`arn:aws:guardduty:*:${this.account}:detector/*`],
       })
     )
 

@@ -359,3 +359,29 @@ class TestHandler:
         # Missing 'finding_id' key
         resp = guardduty_module.handler({}, ctx)
         assert "error" in resp
+
+    def test_eventbridge_invocation_returns_200(self, guardduty_module, mock_boto3):
+        """EventBridge events must NOT crash on missing client_context."""
+        event = {
+            "source": "aws.guardduty",
+            "detail-type": "GuardDuty Finding",
+            "region": "us-east-1",
+            "detail": {
+                "id": "eb-finding-1",
+                "type": "UnauthorizedAccess:EC2/SSHBruteForce",
+                "severity": 5.0,
+                "region": "us-east-1",
+            },
+        }
+        # Pass None as context — EventBridge does not set client_context
+        resp = guardduty_module.handler(event, None)
+        assert resp.get("statusCode") == 200
+        assert "eb-finding-1" in resp.get("body", "")
+
+    def test_get_findings_excludes_archived(self, guardduty_module, mock_boto3):
+        """list_findings call must include a service.archived = false criterion."""
+        guardduty_module.get_guardduty_findings(severity="MEDIUM", region="us-east-1")
+        call_kwargs = mock_boto3.list_findings.call_args[1]
+        criterion = call_kwargs["FindingCriteria"]["criterion"]
+        assert "service.archived" in criterion
+        assert criterion["service.archived"] == {"Eq": ["false"]}

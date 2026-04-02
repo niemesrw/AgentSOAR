@@ -46,7 +46,7 @@
   },
   {
     "name": "archive_guardduty_finding",
-    "description": "Archive (suppress) one or more GuardDuty findings so they no longer appear in the active findings list. Use when a finding is a known false positive or has been fully remediated.",
+    "description": "Archive (suppress) one or more GuardDuty findings so they no longer appear in the active findings list. CAUTION: this is a write action that permanently suppresses findings — only use when a finding is a confirmed false positive or has been fully remediated.",
     "inputSchema": {
       "type": "object",
       "properties": {

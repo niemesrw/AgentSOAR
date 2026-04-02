@@ -82,11 +82,11 @@ def _list_detectors(client: Any) -> list[str]:
 
 def _severity_label(score: float) -> str:
     """Convert a GuardDuty float severity score to a human-readable label."""
-    if score >= 9.0:
+    if score >= _SEVERITY_THRESHOLDS["CRITICAL"]:
         return "CRITICAL"
-    if score >= 7.0:
+    if score >= _SEVERITY_THRESHOLDS["HIGH"]:
         return "HIGH"
-    if score >= 4.0:
+    if score >= _SEVERITY_THRESHOLDS["MEDIUM"]:
         return "MEDIUM"
     return "LOW"
 
@@ -189,6 +189,8 @@ def get_guardduty_findings(
     criteria: dict[str, Any] = {
         "criterion": {
             "severity": {"GreaterThanOrEqual": min_score},
+            # Exclude suppressed/archived findings — only return actionable active findings
+            "service.archived": {"Eq": ["false"]},
         }
     }
 
@@ -440,9 +442,38 @@ _TOOL_DISPATCH: dict[str, Any] = {
 }
 
 
+def _handle_eventbridge(event: dict[str, Any]) -> dict[str, Any]:
+    """
+    Handle an EventBridge 'GuardDuty Finding' event.
+
+    EventBridge invocations do not carry client_context, so they must be
+    detected and dispatched separately.  The raw finding is logged for
+    downstream processing (e.g. CloudWatch Logs Insights, SIEM forwarding).
+    Extend this function to trigger automated workflows on new findings.
+    """
+    detail = event.get("detail", {})
+    finding_id = detail.get("id", "unknown")
+    severity = detail.get("severity", 0.0)
+    finding_type = detail.get("type", "unknown")
+    region = detail.get("region", event.get("region", "unknown"))
+    logger.info(
+        "EventBridge GuardDuty finding ingested: id=%s type=%s severity=%s region=%s",
+        finding_id,
+        finding_type,
+        severity,
+        region,
+    )
+    return {"statusCode": 200, "body": f"Ingested finding {finding_id}"}
+
+
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """
-    GuardDuty tools Lambda handler for FAST AgentCore Gateway.
+    GuardDuty tools Lambda handler for AgentSOAR AgentCore Gateway.
+
+    Handles two invocation paths:
+      1. AgentCore Gateway tool call — context.client_context carries the tool name.
+      2. EventBridge 'GuardDuty Finding' event — no client_context; routed to
+         _handle_eventbridge() for ingestion/logging.
 
     Implements four tools:
     - get_guardduty_findings
@@ -450,16 +481,20 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     - archive_guardduty_finding
     - triage_guardduty_finding
 
-    Input format:
+    Gateway input format:
         event: tool arguments passed directly from the AgentCore Gateway
         context.client_context.custom['bedrockAgentCoreToolName']: full tool name with target prefix
 
-    Output format:
+    Gateway output format:
         {"content": [{"type": "text", "text": "<result>"}]}
         or
         {"error": "<message>"}
     """
     logger.info("Received event: %s", json.dumps(event))
+
+    # EventBridge invocations have no client_context — detect and dispatch early.
+    if event.get("source") == "aws.guardduty":
+        return _handle_eventbridge(event)
 
     try:
         delimiter = "___"
