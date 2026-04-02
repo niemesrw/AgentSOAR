@@ -38,7 +38,7 @@ We forked FAST as [AgentSOAR](https://github.com/niemesrw/AgentSOAR) and are bui
 
 ## Step 1: GitHub as the Agent's Nervous System
 
-The first integration we're building is GitHub — and it's not just because GitHub has a great MCP server (though it does). It's because GitHub becomes the connective tissue of the entire platform:
+The first integration we're building is GitHub — it becomes the connective tissue of the entire platform:
 
 - **Incidents → Issues**: every alert the agent investigates becomes a tracked GitHub issue with full context, timeline, and resolution notes
 - **Gaps → Issues**: when the agent hits a missing tool or playbook, it files an issue against itself
@@ -344,5 +344,4 @@ After merging and redeploying the frontend, the FAST template branding is gone:
 - [FAST template](https://github.com/awslabs/fullstack-solution-template-for-agentcore)
 - [Amazon Bedrock AgentCore](https://aws.amazon.com/bedrock/agentcore/)
 - [AG-UI Protocol](https://docs.ag-ui.com/concepts/overview)
-- [GitHub MCP Server](https://github.com/github/github-mcp-server)
 - [CopilotKit](https://www.copilotkit.ai/)
