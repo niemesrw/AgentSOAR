@@ -306,8 +306,8 @@ delegated admin detector via the cross-account role:
 
 ![AgentSOAR UI showing 10 live GuardDuty findings by severity](images/guardduty-ui-findings.png)
 
-The CRITICAL finding (`AttackSequence:IAM/CompromisedCredentials` on the `root/niemesrw`
-principal) and the HIGH S3 deletion API anomaly are real behavioral detections, not
+The CRITICAL finding (`AttackSequence:IAM/CompromisedCredentials`) and the HIGH S3
+deletion API anomaly are real behavioral detections against live org activity, not
 sample data.
 
 ## What's next

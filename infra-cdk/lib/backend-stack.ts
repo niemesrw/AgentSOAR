@@ -722,12 +722,16 @@ export class BackendStack extends cdk.NestedStack {
       partitionKey: { name: "findingId", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       timeToLiveAttribute: "ttl",
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      pointInTimeRecovery: true,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     })
-    // GSI used by list_guardduty_findings_since to query by ingest time within a status partition
+    // GSI used by list_guardduty_findings_since to query by ingest time within a date bucket.
+    // dateBucket (YYYY-MM-DD) is the partition key rather than a constant like "status" to
+    // avoid a hot partition under bursty GuardDuty volumes.
     findingsTable.addGlobalSecondaryIndex({
       indexName: "ingestedAtEpoch-index",
-      partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
+      partitionKey: { name: "dateBucket", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "ingestedAtEpoch", type: dynamodb.AttributeType.NUMBER },
       projectionType: dynamodb.ProjectionType.ALL,
     })

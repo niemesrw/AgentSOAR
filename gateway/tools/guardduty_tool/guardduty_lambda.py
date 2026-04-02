@@ -158,6 +158,9 @@ def _store_finding(
         "accountId": account_id,
         "ingestedAt": now.isoformat(),
         "ingestedAtEpoch": int(now.timestamp()),
+        "dateBucket": now.strftime(
+            "%Y-%m-%d"
+        ),  # GSI partition key — spreads load vs. a constant
         "status": "NEW",
         "ttl": ttl,
     }
@@ -223,7 +226,10 @@ def _invoke_agent_async(
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
-    t.join(timeout=55)  # Stay within Lambda timeout; EventBridge Lambda default is 60 s
+    # No join — true fire-and-forget. The Lambda returns 200 immediately; the daemon
+    # thread completes within the container's remaining execution window or is reaped
+    # when the container freezes. Blocking on join would push the handler to the 60 s
+    # timeout limit on slow AgentCore responses and cause EventBridge to retry.
 
 
 def _list_detectors(client: Any) -> list[str]:
@@ -610,13 +616,36 @@ def list_guardduty_findings_since(hours: int = 24) -> str:
     hours = max(1, min(168, hours))
     cutoff = int(datetime.now(timezone.utc).timestamp()) - hours * 3600
 
+    # Build the set of date buckets (YYYY-MM-DD) that overlap the look-back window.
+    # The GSI partitions by dateBucket to avoid a hot single-value partition key.
+    now_dt = datetime.now(timezone.utc)
+    days_back = (hours // 24) + 1
+    date_buckets = [
+        (now_dt - __import__("datetime").timedelta(days=d)).strftime("%Y-%m-%d")
+        for d in range(days_back + 1)
+    ]
+
     try:
-        result = table.query(
-            IndexName="ingestedAtEpoch-index",
-            KeyConditionExpression=boto3.dynamodb.conditions.Key("status").eq("NEW")
-            & boto3.dynamodb.conditions.Key("ingestedAtEpoch").gte(cutoff),
-        )
-        items = result.get("Items", [])
+        items: list[dict[str, Any]] = []
+        for bucket in date_buckets:
+            exclusive_start_key = None
+            while True:
+                query_kwargs: dict[str, Any] = {
+                    "IndexName": "ingestedAtEpoch-index",
+                    "KeyConditionExpression": boto3.dynamodb.conditions.Key(
+                        "dateBucket"
+                    ).eq(bucket)
+                    & boto3.dynamodb.conditions.Key("ingestedAtEpoch").gte(cutoff),
+                    "ScanIndexForward": False,
+                    "Limit": 100,
+                }
+                if exclusive_start_key:
+                    query_kwargs["ExclusiveStartKey"] = exclusive_start_key
+                result = table.query(**query_kwargs)
+                items.extend(result.get("Items", []))
+                exclusive_start_key = result.get("LastEvaluatedKey")
+                if not exclusive_start_key:
+                    break
     except ClientError as exc:
         return f"Error querying findings store: {exc}"
 
