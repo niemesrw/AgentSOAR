@@ -256,10 +256,48 @@ Risk factors        : repeated occurrences (>5)
   3. Apply least-privilege principles to the implicated IAM entity.
 ```
 
+## End-to-end validation
+
+The full pipeline was tested against live AWS infrastructure:
+
+**Lambda handler** — directly invoked with an EventBridge-shaped payload; correctly
+detected `source: aws.guardduty` and routed to `_handle_eventbridge` rather than
+attempting to read `client_context`.
+
+**Cross-account EventBridge forwarding** — verified independently by firing a
+custom-source event on the Security account's default bus and confirming it arrived
+on the AgentSOAR account's default bus within ~5 seconds, with `account:
+429971481640` (Security) preserved in the envelope.
+
+**Real sample findings** — `create-sample-findings` was called on the Security
+account detector with two finding types: `UnauthorizedAccess:EC2/SSHBruteForce` and
+`Recon:EC2/PortProbeUnprotectedPort`. Both appeared in CloudWatch logs confirming the
+full path:
+
+```
+GuardDuty (Security account)
+  → EventBridge forward-guardduty-to-agentsoar rule (~4 min delay for sample findings)
+  → AgentSOAR account default bus
+  → GuardDutyFindingsRule
+  → Lambda (6 ms execution, logged finding id + type + severity)
+```
+
+One thing to note: **sample findings take ~4 minutes** to generate an EventBridge
+event after `create-sample-findings` returns. Real findings are faster. Don't mistake
+silence for a broken pipeline — check CloudWatch metrics before debugging the wiring.
+
+**What the Lambda does today:** logs the finding id, type, and severity, then returns
+200. The agent is not yet invoked automatically. That's the next piece of work — see
+below.
+
 ## What's next
 
-- Wire `_handle_eventbridge` to push new findings into a DynamoDB findings store so
-  the agent can answer "what came in while I was away?"
-- Add a `list_guardduty_findings_since` tool backed by the store for time-bounded
-  queries.
-- Extend triage playbooks with account-specific runbooks loaded from SSM.
+- **Invoke the agent on new findings** — wire `_handle_eventbridge` to call the
+  AgentCore Runtime with a triage prompt, closing the loop from detection to
+  automated response.
+- **Findings store** — push ingested findings into DynamoDB so the agent can answer
+  "what came in while I was away?" with a `list_guardduty_findings_since` tool.
+- **Cross-account GuardDuty API calls** — `get_guardduty_findings` currently queries
+  the account it runs in. A cross-account role assumption is needed to query the
+  Security account's aggregated findings.
+- **Extend triage playbooks** with account-specific runbooks loaded from SSM.
