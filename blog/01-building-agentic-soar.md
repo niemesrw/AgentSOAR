@@ -99,6 +99,18 @@ After checking the box and re-asking, the issue was created. This is actually a 
 
 > **Gotcha**: If you fork from a template repo, Issues are off by default. Enable them in **Settings → Features** before the agent can file anything.
 
+The agent wrote a well-structured issue — summary, problem statement, and the specific strings to update. Issue #11:
+
+![GitHub issue #11 created by the agent](images/github-issue-created.png)
+
+#### Human-in-the-loop: assigning the work
+
+The act of assigning the issue is the approval step. The agent filed it; a human reviewed it and decided it was worth doing. We assigned it to an AI coding assistant to implement:
+
+![Issue #11 assigned to Copilot with branding/enhancement/ui labels](images/github-issue-assigned.png)
+
+This is the HITL pattern in practice — the agent identifies a gap and creates a traceable work item, but nothing happens until a human explicitly approves it by assigning it. You can assign to yourself, a teammate, or an AI coding assistant (Claude Code, Copilot, etc.) — the point is that a human made a deliberate decision.
+
 ---
 
 ## Step 2: Closing the Self-Improvement Loop
