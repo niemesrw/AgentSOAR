@@ -265,11 +265,48 @@ The baseline FAST chat UI — logged in, agent running on Claude Sonnet 4.6 via 
 
 ---
 
+## Step 3: Rebranding with Claude Code + Copilot
+
+With GitHub integrated, we hit a natural next task: the fork still had "Fullstack AgentCore Solution Template" (FAST) branding throughout the UI, CDK stack descriptions, and Cognito email templates. Copilot opened a draft PR to swap all user-facing strings for AgentSOAR branding.
+
+### The review workflow
+
+This is where Claude Code becomes part of the development loop. Rather than reading a diff manually, we asked Claude Code to review the PR:
+
+```
+review https://github.com/niemesrw/AgentSOAR/pull/12
+```
+
+Claude Code fetched the PR metadata and full diff via `gh pr view` and `gh pr diff`, then produced a structured review:
+
+![Claude Code PR review output showing issues and verdict](images/claude-code-pr-review.png)
+
+The review surfaced two things worth checking:
+- **Incomplete rebrand**: internal filenames (`fast-main-stack.ts`, `fast-cdk.ts`) and the `FastMainStack` class name weren't touched. The PR description said "user-facing only" — a valid scope boundary, but worth surfacing so future contributors know renames are pending.
+- **Test coverage gap**: the `<title>` assertion in `config.test.ts` was updated, but a parallel assertion for `<meta name="description">` might have been missed.
+
+The verdict was approve — the user-facing string replacement was clean. We confirmed the internal naming was intentionally out of scope and merged in one command:
+
+```
+approve & merge - changes are user-facing only
+```
+
+Claude Code approved the PR with a note, marked it ready (it was still a draft), squash-merged, and deleted the branch. Total interaction: two messages.
+
+### Why this matters for a SOAR
+
+This is the same loop the agent will run for itself. When the agent files a PR to update a detection rule or add a containment script, a human analyst reviews it — ideally with AI-assisted review surfacing any scope gaps or missing test coverage before the merge. The workflow we just used for a branding PR is the same workflow we'll use for agent-generated security changes.
+
+The review quality is proportional to the context Claude Code has. Because it can run `gh` commands, read the full diff, and grep the codebase for remaining references, it catches things a quick visual skim misses.
+
+---
+
 ## What We've Built So Far
 
 - [x] Forked FAST as AgentSOAR
 - [x] Deployed to AWS (CDK + Amplify)
 - [x] GitHub OAuth connected (device flow, per-user tokens)
+- [x] AI-assisted PR review workflow (Claude Code + Copilot)
 - [ ] First incident scenario end-to-end
 - [ ] Log ingestion pipeline
 - [ ] Self-improvement loop demo
