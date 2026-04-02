@@ -248,6 +248,21 @@ You will see the URL for application in the script's output, which will look sim
 
 ## Post-Deployment
 
+### Register GitHub OAuth Callback URL
+
+After the first deploy, register the AgentCore callback URL in your GitHub OAuth App so users can authorize the GitHub tool.
+
+1. Get the callback URL:
+   ```bash
+   aws bedrock-agentcore-control get-oauth2-credential-provider \
+     --name <stack-name>-github \
+     --query callbackUrl --output text
+   ```
+
+2. In GitHub, go to **Settings → Developer settings → OAuth Apps → your app → Authorization callback URL** and set it to the URL from step 1.
+
+This only needs to be done once — the callback URL is stable across redeployments.
+
 ### Updating the Application
 
 To update the frontend code:

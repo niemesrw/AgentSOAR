@@ -13,10 +13,14 @@ from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemory
 from bedrock_agentcore.memory.integrations.strands.session_manager import (
     AgentCoreMemorySessionManager,
 )
-from bedrock_agentcore.runtime import BedrockAgentCoreApp, RequestContext
+from bedrock_agentcore.runtime import (
+    BedrockAgentCoreApp,
+    RequestContext,
+)
 from strands import Agent
 from strands.models import BedrockModel
 from tools.gateway import create_gateway_mcp_client
+from tools.github.strands_tools import make_github_tools
 from utils.auth import extract_user_id_from_context
 
 from tools.code_interpreter import StrandsCodeInterpreterTools
@@ -26,15 +30,18 @@ logger = logging.getLogger(__name__)
 app = BedrockAgentCoreApp()
 
 SYSTEM_PROMPT = (
-    "You are a helpful assistant with access to tools via the Gateway and Code Interpreter. "
+    "You are a helpful security assistant (SOAR agent) with access to tools via the Gateway "
+    "and Code Interpreter. You can help with security investigations, create GitHub issues "
+    "for incidents, and run code to analyze data. "
+    "If GitHub tools fail with an authorization error, ask the user to call github_connect first. "
+    "github_connect uses device authorization — the user visits a URL and enters a short code, "
+    "then calls github_connect again to confirm. Each user has their own independent GitHub connection. "
     "When asked about your tools, list them and explain what they do."
 )
 
 
 def _build_model() -> BedrockModel:
-    return BedrockModel(
-        model_id="global.anthropic.claude-sonnet-4-6", temperature=0.1
-    )
+    return BedrockModel(model_id="global.anthropic.claude-sonnet-4-6", temperature=0.1)
 
 
 def _create_session_manager(
@@ -53,7 +60,7 @@ def _create_session_manager(
 
 
 def _create_agent(user_id: str, session_id: str) -> Agent:
-    """Create a Strands Agent with Gateway MCP tools, Memory, and Code Interpreter."""
+    """Create a Strands Agent with Gateway MCP tools, GitHub tools, Memory, and Code Interpreter."""
     gateway_client = create_gateway_mcp_client()
 
     region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
@@ -62,7 +69,11 @@ def _create_agent(user_id: str, session_id: str) -> Agent:
     return Agent(
         name="strands_agent",
         system_prompt=SYSTEM_PROMPT,
-        tools=[gateway_client, code_tools.execute_python_securely],
+        tools=[
+            gateway_client,
+            code_tools.execute_python_securely,
+            *make_github_tools(user_id),
+        ],
         model=_build_model(),
         session_manager=_create_session_manager(user_id, session_id),
     )
@@ -71,7 +82,14 @@ def _create_agent(user_id: str, session_id: str) -> Agent:
 class ActorAwareStrandsAgent(StrandsAgent):
     """StrandsAgent that creates the agent per-request with fresh MCP context."""
 
-    def __init__(self, *, user_id: str, session_id: str, name: str, description: str):
+    def __init__(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        name: str,
+        description: str,
+    ):
         self._user_id = user_id
         self._session_id = session_id
         super().__init__(
