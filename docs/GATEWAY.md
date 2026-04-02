@@ -212,6 +212,13 @@ Located in `patterns/gateway/sample_tool_lambda.py`:
 
 **Custom Resource Role**: Manages gateway lifecycle operations
 
+#### Credential Provider Types for Lambda Targets
+
+Lambda targets only support `GATEWAY_IAM_ROLE` as the `credentialProviderType` in `credentialProviderConfigurations`. Passing any other type (e.g. `OAUTH`) causes a 400 error:
+> "Lambda target only supports GATEWAY_IAM_ROLE credential provider type"
+
+If a Lambda tool needs to act on behalf of a user (e.g. calling the GitHub API with the user's token), it fetches the token at runtime from the AgentCore token vault using the OAuth2 credential provider ARN — the gateway does not inject it. The `credentialProviderConfigurations` array must contain exactly one entry: `{ credentialProviderType: "GATEWAY_IAM_ROLE" }`.
+
 ### 4. SSM Parameter Storage
 
 Gateway configuration is stored in SSM for easy access:
