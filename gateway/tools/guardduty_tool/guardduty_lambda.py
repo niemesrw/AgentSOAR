@@ -4,9 +4,14 @@
 import json
 import logging
 import os
+import threading
+import uuid
+from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 import boto3
+import boto3.dynamodb.conditions
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger()
@@ -125,6 +130,100 @@ def _guardduty_client(region: str) -> Any:
         region,
         role_arn=os.environ.get("SECURITY_ACCOUNT_ROLE_ARN"),
     )
+
+
+def _findings_table() -> Any | None:
+    """Return a DynamoDB Table resource if FINDINGS_TABLE is configured."""
+    table_name = os.environ.get("FINDINGS_TABLE")
+    if not table_name:
+        return None
+    return boto3.resource("dynamodb").Table(table_name)
+
+
+def _store_finding(
+    finding_id: str, finding_type: str, severity: float, region: str, account_id: str
+) -> None:
+    """Persist a GuardDuty finding summary to DynamoDB (best-effort; non-blocking)."""
+    table = _findings_table()
+    if table is None:
+        return
+    now = datetime.now(timezone.utc)
+    ttl = int(now.timestamp()) + 30 * 24 * 3600  # 30-day TTL
+    item = {
+        "findingId": finding_id,
+        "findingType": finding_type,
+        "severity": Decimal(str(round(severity, 1))),
+        "severityLabel": _severity_label(severity),
+        "region": region,
+        "accountId": account_id,
+        "ingestedAt": now.isoformat(),
+        "ingestedAtEpoch": int(now.timestamp()),
+        "status": "NEW",
+        "ttl": ttl,
+    }
+    try:
+        table.put_item(Item=item)
+        logger.info("Stored finding %s in DynamoDB", finding_id)
+    except ClientError as exc:
+        logger.warning("Failed to store finding %s: %s", finding_id, exc)
+
+
+def _invoke_agent_async(
+    finding_id: str, finding_type: str, severity_label: str, region: str
+) -> None:
+    """
+    Invoke the AgentCore Runtime with a triage prompt for the given finding.
+
+    Runs in a daemon thread so the EventBridge Lambda can return 200 immediately
+    while the agent works asynchronously (within Lambda timeout).
+    Requires AGENT_RUNTIME_ARN and AWS_REGION env vars.
+    """
+    runtime_arn = os.environ.get("AGENT_RUNTIME_ARN")
+    aws_region = os.environ.get("AWS_REGION", "us-east-1")
+    if not runtime_arn:
+        logger.info(
+            "AGENT_RUNTIME_ARN not set — skipping autonomous triage for %s", finding_id
+        )
+        return
+
+    def _run() -> None:
+        prompt = (
+            f"A new {severity_label} severity GuardDuty finding has been detected.\n"
+            f"Finding ID: {finding_id}\n"
+            f"Type: {finding_type}\n"
+            f"Region: {region}\n\n"
+            f"Please triage this finding using the triage_guardduty_finding tool and "
+            f"summarize the key risk factors and recommended actions."
+        )
+        session_id = f"eventbridge-{finding_id[:16]}-{uuid.uuid4().hex[:8]}"
+        try:
+            client = boto3.client("bedrock-agentcore", region_name=aws_region)
+            response = client.invoke_agent_runtime(
+                agentRuntimeArn=runtime_arn,
+                qualifier="DEFAULT",
+                runtimeSessionId=session_id,
+                contentType="application/json",
+                accept="application/json",
+                payload=json.dumps(
+                    {"prompt": prompt, "runtimeSessionId": session_id}
+                ).encode(),
+            )
+            # Consume the streaming response so the invocation completes
+            body = response.get("response", b"")
+            if hasattr(body, "read"):
+                body = body.read()
+            logger.info(
+                "Agent triage invoked for finding %s (session %s) — %d bytes returned",
+                finding_id,
+                session_id,
+                len(body) if body else 0,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.error("Failed to invoke agent for finding %s: %s", finding_id, exc)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=55)  # Stay within Lambda timeout; EventBridge Lambda default is 60 s
 
 
 def _list_detectors(client: Any) -> list[str]:
@@ -490,11 +589,58 @@ def triage_guardduty_finding(finding_id: str, region: str | None = None) -> str:
 # Lambda handler
 # ---------------------------------------------------------------------------
 
+
+def list_guardduty_findings_since(hours: int = 24) -> str:
+    """
+    List GuardDuty findings ingested by AgentSOAR in the last N hours.
+
+    Queries the local DynamoDB findings store (populated by EventBridge ingestion),
+    not the live GuardDuty API.  Use get_guardduty_findings for live API queries.
+
+    Args:
+        hours: Look-back window in hours (1–168, default 24).
+
+    Returns:
+        Formatted summary of recently ingested findings, or a message if none found.
+    """
+    table = _findings_table()
+    if table is None:
+        return "Findings store not configured (FINDINGS_TABLE env var not set)."
+
+    hours = max(1, min(168, hours))
+    cutoff = int(datetime.now(timezone.utc).timestamp()) - hours * 3600
+
+    try:
+        result = table.query(
+            IndexName="ingestedAtEpoch-index",
+            KeyConditionExpression=boto3.dynamodb.conditions.Key("status").eq("NEW")
+            & boto3.dynamodb.conditions.Key("ingestedAtEpoch").gte(cutoff),
+        )
+        items = result.get("Items", [])
+    except ClientError as exc:
+        return f"Error querying findings store: {exc}"
+
+    if not items:
+        return f"No GuardDuty findings ingested in the last {hours} hour(s)."
+
+    items.sort(key=lambda x: x.get("ingestedAtEpoch", 0), reverse=True)
+    lines = [f"GuardDuty findings ingested in the last {hours} hour(s): {len(items)}\n"]
+    for item in items:
+        lines.append(
+            f"  [{item.get('severityLabel', '?')}] {item.get('findingId', '?')} — "
+            f"{item.get('findingType', '?')} "
+            f"(account {item.get('accountId', '?')}, region {item.get('region', '?')}, "
+            f"ingested {item.get('ingestedAt', '?')})"
+        )
+    return "\n".join(lines)
+
+
 _TOOL_DISPATCH: dict[str, Any] = {
     "get_guardduty_findings": get_guardduty_findings,
     "describe_guardduty_finding": describe_guardduty_finding,
     "archive_guardduty_finding": archive_guardduty_finding,
     "triage_guardduty_finding": triage_guardduty_finding,
+    "list_guardduty_findings_since": list_guardduty_findings_since,
 }
 
 
@@ -502,23 +648,28 @@ def _handle_eventbridge(event: dict[str, Any]) -> dict[str, Any]:
     """
     Handle an EventBridge 'GuardDuty Finding' event.
 
-    EventBridge invocations do not carry client_context, so they must be
-    detected and dispatched separately.  The raw finding is logged for
-    downstream processing (e.g. CloudWatch Logs Insights, SIEM forwarding).
-    Extend this function to trigger automated workflows on new findings.
+    1. Parse finding metadata from the EventBridge detail envelope.
+    2. Store the finding summary in the DynamoDB findings table (if configured).
+    3. Invoke the AgentCore Runtime asynchronously to triage the finding (if configured).
     """
     detail = event.get("detail", {})
     finding_id = detail.get("id", "unknown")
-    severity = detail.get("severity", 0.0)
+    severity = float(detail.get("severity", 0.0))
     finding_type = detail.get("type", "unknown")
     region = detail.get("region", event.get("region", "unknown"))
+    account_id = detail.get("accountId", event.get("account", "unknown"))
+    severity_label = _severity_label(severity)
     logger.info(
-        "EventBridge GuardDuty finding ingested: id=%s type=%s severity=%s region=%s",
+        "EventBridge GuardDuty finding ingested: id=%s type=%s severity=%s (%s) region=%s account=%s",
         finding_id,
         finding_type,
         severity,
+        severity_label,
         region,
+        account_id,
     )
+    _store_finding(finding_id, finding_type, severity, region, account_id)
+    _invoke_agent_async(finding_id, finding_type, severity_label, region)
     return {"statusCode": 200, "body": f"Ingested finding {finding_id}"}
 
 
@@ -531,11 +682,12 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
       2. EventBridge 'GuardDuty Finding' event — no client_context; routed to
          _handle_eventbridge() for ingestion/logging.
 
-    Implements four tools:
+    Implements five tools:
     - get_guardduty_findings
     - describe_guardduty_finding
     - archive_guardduty_finding
     - triage_guardduty_finding
+    - list_guardduty_findings_since
 
     Gateway input format:
         event: tool arguments passed directly from the AgentCore Gateway

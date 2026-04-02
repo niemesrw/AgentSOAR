@@ -290,6 +290,18 @@ silence for a broken pipeline — check CloudWatch metrics before debugging the 
 200. The agent is not yet invoked automatically. That's the next piece of work — see
 below.
 
+**Interactive triage via the UI** — with the Gateway tools wired up and the correct
+runtime ARN deployed to Amplify, the agent can already answer GuardDuty questions
+interactively. Asking "do we have any GuardDuty findings?" returned 10 live org-wide
+findings — 1 CRITICAL, 4 HIGH, 5 MEDIUM — pulled from the Security account's
+delegated admin detector via the cross-account role:
+
+![AgentSOAR UI showing 10 live GuardDuty findings by severity](assets/guardduty-ui-findings.png)
+
+The CRITICAL finding (`AttackSequence:IAM/CompromisedCredentials` on the `root/niemesrw`
+principal) and the HIGH S3 deletion API anomaly are real behavioral detections, not
+sample data.
+
 ## What's next
 
 - **Invoke the agent on new findings** — wire `_handle_eventbridge` to call the
@@ -297,7 +309,11 @@ below.
   automated response.
 - **Findings store** — push ingested findings into DynamoDB so the agent can answer
   "what came in while I was away?" with a `list_guardduty_findings_since` tool.
-- ~~**Cross-account GuardDuty API calls**~~ — Done. See below.
+- ~~**Cross-account GuardDuty API calls**~~ — Done. See above.
+- **AG-UI streaming triage** — surface the 4-step triage playbook as a real-time
+  AG-UI stream so each step appears as the agent reasons, rather than waiting for
+  the full report. When `_handle_eventbridge` invokes the agent autonomously, push
+  the stream to a findings panel in the UI.
 - **Extend triage playbooks** with account-specific runbooks loaded from SSM.
 
 ## Cross-account role assumption pattern

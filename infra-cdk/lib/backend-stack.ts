@@ -714,6 +714,24 @@ export class BackendStack extends cdk.NestedStack {
     // ---------------------------------------------------------------------------
     const securityAccountRoleArn = `arn:aws:iam::429971481640:role/AgentSOARCrossAccountRole`
 
+    // DynamoDB table for GuardDuty findings ingested via EventBridge.
+    // Enables the agent to answer "what came in while I was away?" without
+    // hitting the live GuardDuty API.  TTL auto-expires items after 30 days.
+    const findingsTable = new dynamodb.Table(this, "GuardDutyFindingsTable", {
+      tableName: `${config.stack_name_base}-guardduty-findings`,
+      partitionKey: { name: "findingId", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: "ttl",
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    })
+    // GSI used by list_guardduty_findings_since to query by ingest time within a status partition
+    findingsTable.addGlobalSecondaryIndex({
+      indexName: "ingestedAtEpoch-index",
+      partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "ingestedAtEpoch", type: dynamodb.AttributeType.NUMBER },
+      projectionType: dynamodb.ProjectionType.ALL,
+    })
+
     // Create GuardDuty tool Lambda
     const guarddutyLambda = new lambda.Function(this, "GuardDutyToolLambda", {
       runtime: lambda.Runtime.PYTHON_3_13,
@@ -725,6 +743,10 @@ export class BackendStack extends cdk.NestedStack {
         // GuardDuty detector (delegated admin holds all org-wide findings).
         // Remove this env var to fall back to querying the local account's detector.
         SECURITY_ACCOUNT_ROLE_ARN: securityAccountRoleArn,
+        // DynamoDB findings store — populated by EventBridge ingestion
+        FINDINGS_TABLE: findingsTable.tableName,
+        // AgentCore Runtime ARN — used by _handle_eventbridge to trigger autonomous triage
+        AGENT_RUNTIME_ARN: this.runtimeArn,
       },
       logGroup: new logs.LogGroup(this, "GuardDutyToolLambdaLogGroup", {
         logGroupName: `/aws/lambda/${config.stack_name_base}-guardduty-tool`,
@@ -761,6 +783,18 @@ export class BackendStack extends cdk.NestedStack {
         effect: iam.Effect.ALLOW,
         actions: ["guardduty:ArchiveFindings"],
         resources: [`arn:aws:guardduty:*:${this.account}:detector/*`],
+      })
+    )
+
+    // DynamoDB permissions: write findings from EventBridge, read for list_guardduty_findings_since
+    findingsTable.grantReadWriteData(guarddutyLambda)
+
+    // AgentCore Runtime invocation: allows _handle_eventbridge to trigger autonomous triage
+    guarddutyLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["bedrock-agentcore:InvokeAgentRuntime"],
+        resources: [this.runtimeArn],
       })
     )
 
