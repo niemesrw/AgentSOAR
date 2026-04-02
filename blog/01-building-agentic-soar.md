@@ -111,6 +111,18 @@ The act of assigning the issue is the approval step. The agent filed it; a human
 
 This is the HITL pattern in practice — the agent identifies a gap and creates a traceable work item, but nothing happens until a human explicitly approves it by assigning it. You can assign to yourself, a teammate, or an AI coding assistant (Claude Code, Copilot, etc.) — the point is that a human made a deliberate decision.
 
+#### Building out the backlog
+
+With the first issue filed and approved, we asked the agent to think bigger: create a well-scoped set of issues to turn AgentSOAR into a real AWS security platform, starting with the integrations that make the most sense for an AWS-deployed SOAR.
+
+The agent created all 8 in parallel:
+
+![Agent creating 8 GitHub issues in parallel, organized by Detection & Ingestion, Remediation Playbooks, and Core Platform](images/github-backlog-created.png)
+
+Three categories, eight issues — AWS Security Hub, GuardDuty, CloudTrail for ingestion; IAM, EC2/VPC, and S3 playbooks for remediation; plus core platform work. Each one a concrete, actionable unit of work that a human (or an AI coding assistant) can pick up and implement independently.
+
+This is the backlog the platform will build against.
+
 ---
 
 ## Step 2: Closing the Self-Improvement Loop
