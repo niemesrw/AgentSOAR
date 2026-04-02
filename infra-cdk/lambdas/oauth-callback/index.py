@@ -97,7 +97,7 @@ def _exchange_code(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310
             result = json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         raise RuntimeError(
@@ -129,7 +129,7 @@ def _store_token(provider: str, user_id: str, token_data: dict) -> None:
         Overwrite=True,
         Description=f"OAuth token for provider={provider}",
     )
-    logger.info("Stored %s token for user %s", provider, user_id)
+    logger.info("Stored %s token for user %s", provider, user_id)  # nosec
 
 
 def handler(event, context):

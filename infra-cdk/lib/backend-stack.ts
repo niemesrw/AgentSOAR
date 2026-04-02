@@ -274,9 +274,23 @@ export class BackendStack extends cdk.NestedStack {
       new iam.PolicyStatement({
         sid: "SSMParameterAccess",
         effect: iam.Effect.ALLOW,
-        actions: ["ssm:GetParameter", "ssm:GetParameters", "ssm:PutParameter", "ssm:DeleteParameter"],
+        actions: ["ssm:GetParameter", "ssm:GetParameters"],
         resources: [
           `arn:aws:ssm:${this.region}:${this.account}:parameter/${config.stack_name_base}/*`,
+        ],
+      })
+    )
+    // OAuth state write/delete scoped to only OAuth paths — avoids overwriting
+    // unrelated config (gateway URL, machine client secret, etc.)
+    agentRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "SSMOAuthWriteAccess",
+        effect: iam.Effect.ALLOW,
+        actions: ["ssm:PutParameter", "ssm:DeleteParameter"],
+        resources: [
+          `arn:aws:ssm:${this.region}:${this.account}:parameter/${config.stack_name_base}/oauth-token/*`,
+          `arn:aws:ssm:${this.region}:${this.account}:parameter/${config.stack_name_base}/oauth-device/*`,
+          `arn:aws:ssm:${this.region}:${this.account}:parameter/${config.stack_name_base}/oauth-pending/*`,
         ],
       })
     )

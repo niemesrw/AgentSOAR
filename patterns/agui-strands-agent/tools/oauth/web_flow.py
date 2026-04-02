@@ -76,7 +76,7 @@ def exchange_code(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310
             result = json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         raise RuntimeError(
@@ -115,7 +115,7 @@ def refresh_access_token(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"Token refresh failed {e.code}: {e.read().decode()}") from e

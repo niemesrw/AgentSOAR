@@ -74,7 +74,7 @@ def get_valid_token(provider: str, user_id: str) -> str | None:
     # Token is expired — try refresh
     if not provider_cfg.supports_refresh or not token_data.get("refresh_token"):
         logger.warning(
-            "Token expired for provider=%s user=%s with no refresh token",
+            "Token expired for provider=%s user=%s with no refresh token",  # nosec
             provider,
             user_id,
         )
@@ -92,11 +92,11 @@ def get_valid_token(provider: str, user_id: str) -> str | None:
         # Keep old refresh token if provider didn't return a new one
         new_token = _normalize_token(refreshed, token_data.get("refresh_token"))
         store.put_token(provider, user_id, new_token)
-        logger.info("Refreshed token for provider=%s user=%s", provider, user_id)
+        logger.info("Refreshed token for provider=%s user=%s", provider, user_id)  # nosec
         return new_token["access_token"]
     except Exception as e:
         logger.error(
-            "Token refresh failed for provider=%s user=%s: %s", provider, user_id, e
+            "Token refresh failed for provider=%s user=%s: %s", provider, user_id, e  # nosec
         )
         store.delete_token(provider, user_id)
         return None

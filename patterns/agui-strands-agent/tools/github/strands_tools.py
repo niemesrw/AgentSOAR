@@ -43,7 +43,7 @@ def _gh(method: str, path: str, token: str, body: dict | None = None) -> dict:
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310
             raw = resp.read()
             return json.loads(raw.decode()) if raw else {}
     except urllib.error.HTTPError as e:

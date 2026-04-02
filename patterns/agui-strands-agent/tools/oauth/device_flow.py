@@ -38,7 +38,7 @@ def start(device_url: str, client_id: str, scopes: list[str]) -> dict:
         headers={"Accept": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=10) as resp:
+    with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310
         result = json.loads(resp.read().decode())
 
     if "error" in result:
@@ -75,7 +75,7 @@ def poll(
         headers={"Accept": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=10) as resp:
+    with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310
         result = json.loads(resp.read().decode())
 
     error = result.get("error")

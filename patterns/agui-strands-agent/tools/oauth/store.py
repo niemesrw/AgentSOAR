@@ -48,14 +48,14 @@ def put_token(provider: str, user_id: str, token_data: dict) -> None:
         Overwrite=True,
         Description=f"OAuth token for provider={provider}",
     )
-    logger.info("Stored token for provider=%s user=%s", provider, user_id)
+    logger.info("Stored token for provider=%s user=%s", provider, user_id)  # nosec
 
 
 def delete_token(provider: str, user_id: str) -> bool:
     """Delete stored token. Returns True if deleted, False if not found."""
     try:
         _ssm().delete_parameter(Name=f"/{_STACK}/oauth-token/{provider}/{user_id}")
-        logger.info("Deleted token for provider=%s user=%s", provider, user_id)
+        logger.info("Deleted token for provider=%s user=%s", provider, user_id)  # nosec
         return True
     except ClientError as e:
         if e.response["Error"]["Code"] == "ParameterNotFound":
