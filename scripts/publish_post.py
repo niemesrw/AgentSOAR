@@ -34,38 +34,30 @@ def get_current_ref() -> str:
 
 
 def dispatch(post_path: str, tags: str, draft: bool, ref: str) -> None:
-    payload = {
-        "source_repo": SOURCE_REPO,
-        "post_path": post_path,
-        "tags": tags,
-        "ref": ref,
-        "draft": draft,
-    }
+    body = json.dumps({
+        "event_type": "publish-post",
+        "client_payload": {
+            "source_repo": SOURCE_REPO,
+            "post_path": post_path,
+            "tags": tags,
+            "ref": ref,
+            "draft": draft,
+        },
+    })
     token = os.environ.get("PUBLISH_TOKEN")
-    if token:
-        subprocess.run(  # nosec B603
-            [
-                "gh", "api",
-                f"repos/{TARGET_REPO}/dispatches",
-                "--method", "POST",
-                "--field", f"event_type=publish-post",
-                "--field", f"client_payload={json.dumps(payload)}",
-                "--header", f"Authorization: Bearer {token}",
-            ],
-            check=True,
-        )
-    else:
-        # Fall back to gh CLI auth
-        subprocess.run(  # nosec B603
-            [
-                "gh", "api",
-                f"repos/{TARGET_REPO}/dispatches",
-                "--method", "POST",
-                "--raw-field", f"event_type=publish-post",
-                "--raw-field", f"client_payload={json.dumps(payload)}",
-            ],
-            check=True,
-        )
+    headers = ["-H", f"Authorization: Bearer {token}"] if token else []
+    subprocess.run(  # nosec B603
+        [
+            "gh", "api",
+            f"repos/{TARGET_REPO}/dispatches",
+            "--method", "POST",
+            "--input", "-",
+            *headers,
+        ],
+        input=body,
+        text=True,
+        check=True,
+    )
 
 
 def main() -> int:
@@ -73,7 +65,7 @@ def main() -> int:
     parser.add_argument("post", help="Relative path to post (e.g. blog/03-my-post.md)")
     parser.add_argument("--tags", default="", help="Comma-separated tags")
     parser.add_argument("--draft", action="store_true", help="Open a draft PR instead of publishing directly")
-    parser.add_argument("--ref", default="", help="Git ref to check out (defaults to current HEAD SHA)")
+    parser.add_argument("--ref", default="", help="Full git SHA to check out (defaults to current HEAD). Never pass a short SHA — GitHub Actions requires the full 40-char SHA.")
     args = parser.parse_args()
 
     post_path = Path(args.post)
