@@ -85,6 +85,20 @@ That's it. No redirect URLs, no browser pop-ups from the agent. The device flow 
 
 ![GitHub device flow connect UX in AgentSOAR](images/github-oauth-connect.png)
 
+#### First real task: create an issue
+
+With GitHub connected, we asked the agent to file an issue to track renaming the UI from the FAST template name to AgentSOAR. It called `github_create_issue` and immediately hit a wall:
+
+![Agent diagnosing that Issues are disabled on the repo](images/github-issues-disabled.png)
+
+FAST is a template repository and GitHub forks have Issues disabled by default. The agent correctly diagnosed this and gave exact instructions to fix it. One trip to **Settings → Features → Issues**:
+
+![GitHub repo settings showing the Issues checkbox](images/github-issues-enable-setting.png)
+
+After checking the box and re-asking, the issue was created. This is actually a good illustration of how the agent handles tool failures — it doesn't silently swallow the error, it explains the problem and tells you what to do about it.
+
+> **Gotcha**: If you fork from a template repo, Issues are off by default. Enable them in **Settings → Features** before the agent can file anything.
+
 ---
 
 ## Step 2: Closing the Self-Improvement Loop
