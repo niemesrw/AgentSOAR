@@ -299,6 +299,12 @@ This is the same loop the agent will run for itself. When the agent files a PR t
 
 The review quality is proportional to the context Claude Code has. Because it can run `gh` commands, read the full diff, and grep the codebase for remaining references, it catches things a quick visual skim misses.
 
+### The result
+
+After merging and redeploying the frontend, the FAST template branding is gone:
+
+![AgentSOAR UI after rebranding — "Welcome to AgentSOAR" with the Agentic Security Orchestration, Automation & Response tagline](images/agentsoar-rebranded.png)
+
 ---
 
 ## What We've Built So Far
