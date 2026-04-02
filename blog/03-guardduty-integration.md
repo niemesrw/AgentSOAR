@@ -6,17 +6,25 @@ design decisions along the way.
 
 ## AWS prerequisites
 
-### 1 — Enable GuardDuty
+The Blanxlait org has four accounts: management (`myMainAWSAccount`), Security,
+AI (where AgentSOAR is deployed), and Log Archive. All of the setup below was
+performed interactively via the AWS CLI — nothing is baked into the CDK stack because
+these are one-time org-level configurations that live outside any single application's
+lifecycle.
 
-GuardDuty must be enabled in every region you want findings from. For an AWS
-Organization the recommended path is to enable it org-wide from a **delegated
-administrator** account (typically a dedicated Security account) rather than
-enabling it account-by-account.
+### 1 — Enable GuardDuty org-wide
 
-In the **management account**:
+GuardDuty must be enabled in every account/region you want findings from. The
+recommended pattern for an AWS Organization is a **delegated administrator** account
+— a dedicated Security account that aggregates findings from all members.
+
+The Blanxlait org already had the Security account designated as the GuardDuty
+delegated admin and GuardDuty enabled in the Security account with a detector.
+What was missing was member enrollment and auto-enable for future accounts.
+
+If you're starting from scratch, run these in the **management account** first:
 
 ```bash
-# Designate your Security account as the GuardDuty delegated admin
 aws organizations enable-aws-service-access \
   --service-principal guardduty.amazonaws.com \
   --profile management-admin
@@ -26,14 +34,24 @@ aws guardduty enable-organization-admin-account \
   --profile management-admin
 ```
 
-In the **Security (delegated admin) account**:
+Then in the **Security (delegated admin) account**, enable auto-enrollment so every
+current and future member account gets GuardDuty enabled automatically:
 
 ```bash
-# Auto-enroll all current and future member accounts
+DETECTOR=$(aws guardduty list-detectors --query 'DetectorIds[0]' --output text)
+
+# Auto-enroll future accounts
 aws guardduty update-organization-configuration \
-  --detector-id $(aws guardduty list-detectors --query 'DetectorIds[0]' --output text) \
-  --auto-enable-organization-members ALL \
-  --profile blanxlait-ai   # or your security account profile
+  --detector-id $DETECTOR \
+  --auto-enable-organization-members ALL
+
+# Enroll existing accounts (one-time; auto-enable only covers future accounts)
+aws guardduty create-members \
+  --detector-id $DETECTOR \
+  --account-details \
+    AccountId=<AI_ACCOUNT_ID>,Email=<email> \
+    AccountId=<LOG_ACCOUNT_ID>,Email=<email> \
+    AccountId=<MGMT_ACCOUNT_ID>,Email=<email>
 ```
 
 With this in place, findings from every member account aggregate to the Security
@@ -68,90 +86,93 @@ than your GuardDuty delegated admin (Security) account.
 
 **Why it matters:** GuardDuty publishes `GuardDuty Finding` events to EventBridge in
 the *account where findings are aggregated* — the Security account. The
-`GuardDutyFindingsRule` created by AgentSOAR's CDK stack lives in the AgentSOAR
-account and will never fire unless findings are forwarded across accounts.
+`GuardDutyFindingsRule` created by AgentSOAR's CDK stack lives in the AgentSOAR (AI)
+account and will never fire unless findings are forwarded across accounts first.
 
-**The pattern:** Security account → forward via EventBridge → AgentSOAR account
-default event bus → existing `GuardDutyFindingsRule` picks it up normally.
+**The pattern:**
 
 ```
-Security account (us-east-1)              AgentSOAR account (us-east-1)
-─────────────────────────────             ──────────────────────────────
+Security account                          AgentSOAR (AI) account
+────────────────────────────────          ──────────────────────────────
 GuardDuty Finding event                   Default event bus
-  │                                         ↑  (resource policy allows
-  ▼                                         │   Security account to put)
+  │                                         ↑  resource policy grants
+  ▼                                         │  Security account PutEvents
 EventBridge rule                            │
-  "source: aws.guardduty"  ────────────────►│
-  target: AgentSOAR default bus             │
+  forward-guardduty-to-agentsoar ──────────►│
+  via EventBridgeCrossAccountToAgentSOAR    │
                                             ▼
-                                       GuardDutyFindingsRule
+                                       GuardDutyFindingsRule  (CDK-managed)
                                             │
                                             ▼
                                        GuardDuty tool Lambda
 ```
 
-**Step 1 — Allow the Security account to put events on the AgentSOAR event bus.**
+These three resources were created once via CLI — they live outside the CDK stack
+because they span account boundaries.
 
-This is a one-time console or CLI operation in the **AgentSOAR account**. It cannot
-currently be expressed in CDK's `EventBus.grantPutEventsTo` for cross-account
-principals, so do it via CLI or CloudFormation in the Security account's pipeline:
+**Step 1 — Resource policy on the AgentSOAR event bus** (run in the AI account):
 
 ```bash
-# Run in the AgentSOAR account
 aws events put-permission \
   --event-bus-name default \
   --action events:PutEvents \
   --principal <SECURITY_ACCOUNT_ID> \
   --statement-id AllowGuardDutyForwardingFromSecurity \
+  --region us-east-1 \
   --profile blanxlait-ai
 ```
 
-**Step 2 — Create a forwarding rule in the Security account.**
-
-This rule runs in the Security account and forwards all GuardDuty findings to the
-AgentSOAR account's default event bus. Create it once manually or add it to the
-Security account's own CDK/Terraform stack:
+**Step 2 — IAM role in the Security account** for EventBridge to assume when
+forwarding:
 
 ```bash
-# Run in the Security account
-AGENTSOAR_ACCOUNT_ID=<YOUR_AGENTSOAR_ACCOUNT_ID>
-REGION=us-east-1
+# Trust policy
+aws iam create-role \
+  --role-name EventBridgeCrossAccountToAgentSOAR \
+  --assume-role-policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Principal": {"Service": "events.amazonaws.com"},
+      "Action": "sts:AssumeRole"
+    }]
+  }'
 
+# Permissions policy
+aws iam put-role-policy \
+  --role-name EventBridgeCrossAccountToAgentSOAR \
+  --policy-name PutEventsToAgentSOAR \
+  --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Action": "events:PutEvents",
+      "Resource": "arn:aws:events:us-east-1:<AI_ACCOUNT_ID>:event-bus/default"
+    }]
+  }'
+```
+
+**Step 3 — Forwarding rule in the Security account:**
+
+```bash
 aws events put-rule \
-  --name "forward-guardduty-to-agentsoar" \
+  --name forward-guardduty-to-agentsoar \
   --event-pattern '{"source":["aws.guardduty"],"detail-type":["GuardDuty Finding"]}' \
   --state ENABLED \
-  --region $REGION
+  --region us-east-1
 
 aws events put-targets \
   --rule forward-guardduty-to-agentsoar \
-  --targets "[{
-    \"Id\": \"AgentSOARAccount\",
-    \"Arn\": \"arn:aws:events:${REGION}:${AGENTSOAR_ACCOUNT_ID}:event-bus/default\",
-    \"RoleArn\": \"arn:aws:iam::<SECURITY_ACCOUNT_ID>:role/EventBridgeCrossAccountRole\"
-  }]" \
-  --region $REGION
+  --region us-east-1 \
+  --targets '[{
+    "Id": "AgentSOARDefaultBus",
+    "Arn": "arn:aws:events:us-east-1:<AI_ACCOUNT_ID>:event-bus/default",
+    "RoleArn": "arn:aws:iam::<SECURITY_ACCOUNT_ID>:role/EventBridgeCrossAccountToAgentSOAR"
+  }]'
 ```
 
-The IAM role (`EventBridgeCrossAccountRole`) in the Security account needs:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": "events:PutEvents",
-    "Resource": "arn:aws:events:<REGION>:<AGENTSOAR_ACCOUNT_ID>:event-bus/default"
-  }]
-}
-```
-
-with a trust policy for `events.amazonaws.com`.
-
-Once both steps are done, findings that arrive in the Security account's EventBridge
-will land on the AgentSOAR account's default bus within seconds. The
-`GuardDutyFindingsRule` CDK construct requires no changes — it already listens on
-the default bus.
+Once all three are in place, findings land on the AgentSOAR default bus within
+seconds. The `GuardDutyFindingsRule` CDK construct needs no changes.
 
 ### 4 — IAM for cross-account API calls
 
