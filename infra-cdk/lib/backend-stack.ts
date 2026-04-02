@@ -8,6 +8,8 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb"
 import * as apigateway from "aws-cdk-lib/aws-apigateway"
 import * as logs from "aws-cdk-lib/aws-logs"
 import * as s3 from "aws-cdk-lib/aws-s3"
+import * as events from "aws-cdk-lib/aws-events"
+import * as events_targets from "aws-cdk-lib/aws-events-targets"
 import * as agentcore from "@aws-cdk/aws-bedrock-agentcore-alpha"
 import * as bedrockagentcore from "aws-cdk-lib/aws-bedrockagentcore"
 import { PythonFunction } from "@aws-cdk/aws-lambda-python-alpha"
@@ -697,6 +699,33 @@ export class BackendStack extends cdk.NestedStack {
   }
 
   private createAgentCoreGateway(config: AppConfig): void {
+    // Create GuardDuty tool Lambda
+    const guarddutyLambda = new lambda.Function(this, "GuardDutyToolLambda", {
+      runtime: lambda.Runtime.PYTHON_3_13,
+      handler: "guardduty_lambda.handler",
+      code: lambda.Code.fromAsset(path.join(__dirname, "../../gateway/tools/guardduty_tool")), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+      timeout: cdk.Duration.seconds(60),
+      logGroup: new logs.LogGroup(this, "GuardDutyToolLambdaLogGroup", {
+        logGroupName: `/aws/lambda/${config.stack_name_base}-guardduty-tool`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    })
+
+    // GuardDuty read & archive permissions for the tool Lambda
+    guarddutyLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "guardduty:ListDetectors",
+          "guardduty:ListFindings",
+          "guardduty:GetFindings",
+          "guardduty:ArchiveFindings",
+        ],
+        resources: ["*"],
+      })
+    )
+
     // Create sample tool Lambda
     const toolLambda = new lambda.Function(this, "SampleToolLambda", {
       runtime: lambda.Runtime.PYTHON_3_13,
@@ -718,6 +747,7 @@ export class BackendStack extends cdk.NestedStack {
 
     // Lambda invoke permissions
     toolLambda.grantInvoke(gatewayRole)
+    guarddutyLambda.grantInvoke(gatewayRole)
 
     // Bedrock permissions (region-agnostic)
     gatewayRole.addToPolicy(
@@ -909,11 +939,51 @@ export class BackendStack extends cdk.NestedStack {
       ],
     })
 
+    // Load GuardDuty tool specification
+    const guarddutyToolSpecPath = path.join(__dirname, "../../gateway/tools/guardduty_tool/tool_spec.json") // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+    const guarddutyApiSpec = JSON.parse(require("fs").readFileSync(guarddutyToolSpecPath, "utf8"))
+
+    // Create Gateway Target for GuardDuty tools
+    const guarddutyGatewayTarget = new bedrockagentcore.CfnGatewayTarget(this, "GuardDutyGatewayTarget", {
+      gatewayIdentifier: gateway.attrGatewayIdentifier,
+      name: "guardduty-tool-target",
+      description: "GuardDuty threat detection and triage tools",
+      targetConfiguration: {
+        mcp: {
+          lambda: {
+            lambdaArn: guarddutyLambda.functionArn,
+            toolSchema: {
+              inlinePayload: guarddutyApiSpec,
+            },
+          },
+        },
+      },
+      credentialProviderConfigurations: [
+        {
+          credentialProviderType: "GATEWAY_IAM_ROLE",
+        },
+      ],
+    })
+
     // Ensure proper creation order
     gatewayTarget.addDependency(gateway)
+    guarddutyGatewayTarget.addDependency(gateway)
     gateway.node.addDependency(toolLambda)
+    gateway.node.addDependency(guarddutyLambda)
     gateway.node.addDependency(this.machineClient)
     gateway.node.addDependency(gatewayRole)
+
+    // EventBridge rule: route GuardDuty findings to the GuardDuty tool Lambda
+    // This enables near-real-time ingestion of new findings into AgentSOAR
+    const guarddutyEventRule = new events.Rule(this, "GuardDutyFindingsRule", {
+      ruleName: `${config.stack_name_base}-guardduty-findings`,
+      description: "Route GuardDuty findings to AgentSOAR GuardDuty tool Lambda",
+      eventPattern: {
+        source: ["aws.guardduty"],
+        detailType: ["GuardDuty Finding"],
+      },
+    })
+    guarddutyEventRule.addTarget(new events_targets.LambdaFunction(guarddutyLambda))
 
     // Store AgentCore Gateway URL in SSM for AgentCore Runtime access
     new ssm.StringParameter(this, "GatewayUrlParam", {
@@ -943,9 +1013,19 @@ export class BackendStack extends cdk.NestedStack {
       description: "AgentCore Gateway Target ID",
     })
 
+    new cdk.CfnOutput(this, "GuardDutyGatewayTargetId", {
+      value: guarddutyGatewayTarget.ref,
+      description: "AgentCore Gateway Target ID for GuardDuty tools",
+    })
+
     new cdk.CfnOutput(this, "ToolLambdaArn", {
       description: "ARN of the sample tool Lambda",
       value: toolLambda.functionArn,
+    })
+
+    new cdk.CfnOutput(this, "GuardDutyToolLambdaArn", {
+      description: "ARN of the GuardDuty tool Lambda",
+      value: guarddutyLambda.functionArn,
     })
 
     new cdk.CfnOutput(this, "OAuthCallbackUrl", {
