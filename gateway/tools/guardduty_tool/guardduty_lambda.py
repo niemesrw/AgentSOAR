@@ -187,7 +187,7 @@ def get_guardduty_findings(
     detector_id = detector_ids[0]
 
     criteria: dict[str, Any] = {
-        "criterion": {
+        "Criterion": {
             "severity": {"GreaterThanOrEqual": min_score},
             # Exclude suppressed/archived findings — only return actionable active findings
             "service.archived": {"Eq": ["false"]},
@@ -195,7 +195,7 @@ def get_guardduty_findings(
     }
 
     if account_id:
-        criteria["criterion"]["accountId"] = {"Eq": [account_id]}
+        criteria["Criterion"]["accountId"] = {"Eq": [account_id]}
 
     try:
         list_resp = client.list_findings(

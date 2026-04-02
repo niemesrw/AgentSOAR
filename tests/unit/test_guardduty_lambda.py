@@ -382,6 +382,6 @@ class TestHandler:
         """list_findings call must include a service.archived = false criterion."""
         guardduty_module.get_guardduty_findings(severity="MEDIUM", region="us-east-1")
         call_kwargs = mock_boto3.list_findings.call_args[1]
-        criterion = call_kwargs["FindingCriteria"]["criterion"]
+        criterion = call_kwargs["FindingCriteria"]["Criterion"]
         assert "service.archived" in criterion
         assert criterion["service.archived"] == {"Eq": ["false"]}
