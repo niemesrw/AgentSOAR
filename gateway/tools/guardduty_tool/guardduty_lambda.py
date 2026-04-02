@@ -66,9 +66,65 @@ _SEVERITY_ACTIONS: dict[str, list[str]] = {
 }
 
 
-def _get_guardduty_client(region: str) -> Any:
-    """Return a GuardDuty boto3 client for the given region."""
-    return boto3.client("guardduty", region_name=region)
+# ---------------------------------------------------------------------------
+# Cross-account client helper
+#
+# This pattern is reused across AgentSOAR Lambda tool groups whenever a tool
+# needs to access resources in another AWS account (Security account for
+# GuardDuty/CloudTrail, management account for org-wide EC2/IAM lookups, etc.).
+#
+# Usage:
+#   client = _get_client("guardduty", region, role_arn=os.environ.get("SECURITY_ACCOUNT_ROLE_ARN"))
+#
+# When SECURITY_ACCOUNT_ROLE_ARN is set the Lambda assumes that role via STS
+# and returns a client scoped to those temporary credentials.  When the env var
+# is absent (e.g. local testing or same-account deployment) it falls back to the
+# Lambda's own execution role — no code change needed.
+#
+# The target account needs a role that:
+#   1. Trusts arn:aws:iam::<AI_ACCOUNT_ID>:root  (or the specific Lambda role ARN)
+#   2. Has the minimum permissions required by the tools in this Lambda
+#
+# When more than one Lambda needs this helper, extract it to a shared Lambda Layer.
+# ---------------------------------------------------------------------------
+
+
+def _get_client(service: str, region: str, role_arn: str | None = None) -> Any:
+    """
+    Return a boto3 client for *service*, optionally via cross-account role assumption.
+
+    Args:
+        service:  AWS service name (e.g. "guardduty", "cloudtrail", "ec2").
+        region:   AWS region string.
+        role_arn: If provided, assume this IAM role via STS before creating the
+                  client.  The Lambda execution role must have sts:AssumeRole on
+                  this ARN.  If None, the Lambda's own execution credentials are used.
+    """
+    if role_arn:
+        sts = boto3.client("sts")
+        resp = sts.assume_role(
+            RoleArn=role_arn,
+            RoleSessionName="agentsoar",
+            ExternalId="agentsoar",
+            DurationSeconds=900,
+        )
+        creds = resp["Credentials"]
+        session = boto3.Session(
+            aws_access_key_id=creds["AccessKeyId"],
+            aws_secret_access_key=creds["SecretAccessKey"],
+            aws_session_token=creds["SessionToken"],
+        )
+        return session.client(service, region_name=region)
+    return boto3.client(service, region_name=region)
+
+
+def _guardduty_client(region: str) -> Any:
+    """Return a GuardDuty client, assuming the security account role if configured."""
+    return _get_client(
+        "guardduty",
+        region,
+        role_arn=os.environ.get("SECURITY_ACCOUNT_ROLE_ARN"),
+    )
 
 
 def _list_detectors(client: Any) -> list[str]:
@@ -178,7 +234,7 @@ def get_guardduty_findings(
     max_results = max(1, min(50, max_results))
     min_score = _SEVERITY_THRESHOLDS.get(severity.upper(), 4.0)
 
-    client = _get_guardduty_client(region)
+    client = _guardduty_client(region)
     detector_ids = _list_detectors(client)
     if not detector_ids:
         return f"No GuardDuty detectors found in region {region}."
@@ -235,7 +291,7 @@ def describe_guardduty_finding(finding_id: str, region: str | None = None) -> st
     """
     region = region or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
 
-    client = _get_guardduty_client(region)
+    client = _guardduty_client(region)
     detector_ids = _list_detectors(client)
     if not detector_ids:
         return f"No GuardDuty detectors found in region {region}."
@@ -296,7 +352,7 @@ def archive_guardduty_finding(finding_ids: list[str], region: str | None = None)
     if not finding_ids:
         return "No finding IDs provided."
 
-    client = _get_guardduty_client(region)
+    client = _guardduty_client(region)
     detector_ids = _list_detectors(client)
     if not detector_ids:
         return f"No GuardDuty detectors found in region {region}."
@@ -330,7 +386,7 @@ def triage_guardduty_finding(finding_id: str, region: str | None = None) -> str:
     """
     region = region or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
 
-    client = _get_guardduty_client(region)
+    client = _guardduty_client(region)
     detector_ids = _list_detectors(client)
     if not detector_ids:
         return f"No GuardDuty detectors found in region {region}."

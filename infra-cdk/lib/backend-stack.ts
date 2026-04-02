@@ -699,12 +699,33 @@ export class BackendStack extends cdk.NestedStack {
   }
 
   private createAgentCoreGateway(config: AppConfig): void {
+    // ---------------------------------------------------------------------------
+    // Cross-account role ARNs
+    //
+    // AgentSOAR Lambdas use a shared _get_client() helper that assumes an IAM
+    // role in another account when SECURITY_ACCOUNT_ROLE_ARN (or
+    // MANAGEMENT_ACCOUNT_ROLE_ARN, etc.) is set.  The roles must be created
+    // once in the target accounts and trust arn:aws:iam::<this.account>:root.
+    //
+    // To add cross-account access for a new Lambda:
+    //   1. Create the role in the target account (see docs/CROSS_ACCOUNT.md)
+    //   2. Pass its ARN as an environment variable below
+    //   3. Grant sts:AssumeRole on the ARN to the Lambda's execution role
+    // ---------------------------------------------------------------------------
+    const securityAccountRoleArn = `arn:aws:iam::429971481640:role/AgentSOARCrossAccountRole`
+
     // Create GuardDuty tool Lambda
     const guarddutyLambda = new lambda.Function(this, "GuardDutyToolLambda", {
       runtime: lambda.Runtime.PYTHON_3_13,
       handler: "guardduty_lambda.handler",
       code: lambda.Code.fromAsset(path.join(__dirname, "../../gateway/tools/guardduty_tool")), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
       timeout: cdk.Duration.seconds(60),
+      environment: {
+        // Cross-account access: assume this role to query the Security account's
+        // GuardDuty detector (delegated admin holds all org-wide findings).
+        // Remove this env var to fall back to querying the local account's detector.
+        SECURITY_ACCOUNT_ROLE_ARN: securityAccountRoleArn,
+      },
       logGroup: new logs.LogGroup(this, "GuardDutyToolLambdaLogGroup", {
         logGroupName: `/aws/lambda/${config.stack_name_base}-guardduty-tool`,
         retention: logs.RetentionDays.ONE_WEEK,
@@ -712,7 +733,16 @@ export class BackendStack extends cdk.NestedStack {
       }),
     })
 
-    // GuardDuty read permissions (account-scoped, no specific detector ARN needed for List)
+    // Allow the Lambda to assume the cross-account role in the Security account
+    guarddutyLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["sts:AssumeRole"],
+        resources: [securityAccountRoleArn],
+      })
+    )
+
+    // GuardDuty read permissions on local account (fallback when no cross-account role)
     guarddutyLambda.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
