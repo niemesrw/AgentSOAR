@@ -58,12 +58,17 @@ def _gh(method: str, path: str, token: str, body: dict | None = None) -> dict:
 def make_github_tools(user_id: str) -> list:
     """Return a list of Strands @tool functions for GitHub, bound to user_id."""
 
+    _cached_token: list[str] = []  # mutable container so the closure can write
+
     def _token() -> str:
+        if _cached_token:
+            return _cached_token[0]
         tok = get_valid_token(PROVIDER, user_id)
         if not tok:
             raise RuntimeError(
                 "GitHub is not connected. Call github_connect to authenticate first."
             )
+        _cached_token.append(tok)
         return tok
 
     @tool
@@ -76,15 +81,15 @@ def make_github_tools(user_id: str) -> list:
 
         Safe to call at any time — returns immediately if already connected.
         """
-        # Already connected?
         tok = get_valid_token(PROVIDER, user_id)
         if tok:
+            _cached_token[:] = [tok]
             return "GitHub is already connected. Your GitHub tools are ready to use."
 
-        # Pending flow — try polling first
         try:
             access_token = poll_device_flow(PROVIDER, user_id)
             if access_token:
+                _cached_token[:] = [access_token]
                 return (
                     "GitHub is now connected! Your GitHub tools are ready to use. "
                     "Try: 'list my open issues in owner/repo'"
@@ -94,15 +99,14 @@ def make_github_tools(user_id: str) -> list:
                 "earlier, then call github_connect again to confirm."
             )
         except RuntimeError:
-            pass  # No pending flow — start fresh
+            pass
         except DeviceFlowExpired:
-            pass  # Expired — fall through to start a new flow
+            pass
         except DeviceFlowDenied:
             return (
                 "GitHub authorization was denied. Call github_connect to start again."
             )
 
-        # Start a new device flow
         result = start_device_flow(PROVIDER, user_id)
         user_code = result["user_code"]
         verification_uri = result.get(

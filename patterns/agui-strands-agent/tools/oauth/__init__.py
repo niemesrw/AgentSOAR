@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 _STACK = os.environ.get("STACK_NAME", "AgentSOAR")
 _REGION = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
 
+_sm = boto3.client("secretsmanager", region_name=_REGION)
+
 __all__ = [
     "get_valid_token",
     "start_device_flow",
@@ -44,8 +46,7 @@ __all__ = [
 
 def _get_creds(provider: str) -> tuple[str, str | None]:
     """Fetch clientId + optional clientSecret from Secrets Manager."""
-    sm = boto3.client("secretsmanager", region_name=_REGION)
-    resp = sm.get_secret_value(SecretId=f"/{_STACK}/oauth-creds/{provider}")
+    resp = _sm.get_secret_value(SecretId=f"/{_STACK}/oauth-creds/{provider}")
     data = json.loads(resp["SecretString"])
     return data["clientId"], data.get("clientSecret")
 
@@ -96,7 +97,10 @@ def get_valid_token(provider: str, user_id: str) -> str | None:
         return new_token["access_token"]
     except Exception as e:
         logger.error(
-            "Token refresh failed for provider=%s user=%s: %s", provider, user_id, e  # nosec
+            "Token refresh failed for provider=%s user=%s: %s",
+            provider,
+            user_id,
+            e,  # nosec
         )
         store.delete_token(provider, user_id)
         return None

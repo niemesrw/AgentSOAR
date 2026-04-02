@@ -12,6 +12,24 @@ import urllib.request
 logger = logging.getLogger(__name__)
 
 
+def _post_form(url: str, params: dict) -> dict:
+    data = urllib.parse.urlencode(params).encode()
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"OAuth POST failed {e.code}: {e.read().decode()}") from e
+
+
 def _b64url(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
 
@@ -56,7 +74,8 @@ def exchange_code(
     code_verifier: str,
 ) -> dict:
     """Exchange authorization code + PKCE verifier for tokens."""
-    data = urllib.parse.urlencode(
+    result = _post_form(
+        token_url,
         {
             "client_id": client_id,
             "client_secret": client_secret,
@@ -64,25 +83,8 @@ def exchange_code(
             "redirect_uri": redirect_uri,
             "grant_type": "authorization_code",
             "code_verifier": code_verifier,
-        }
-    ).encode()
-    req = urllib.request.Request(
-        token_url,
-        data=data,
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/x-www-form-urlencoded",
         },
-        method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310
-            result = json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(
-            f"Token exchange failed {e.code}: {e.read().decode()}"
-        ) from e
-
     if "error" in result:
         raise RuntimeError(
             f"Token exchange error: {result['error']} — {result.get('error_description', '')}"
@@ -97,25 +99,12 @@ def refresh_access_token(
     refresh_token: str,
 ) -> dict:
     """Use a refresh token to obtain a new access token."""
-    data = urllib.parse.urlencode(
+    return _post_form(
+        token_url,
         {
             "client_id": client_id,
             "client_secret": client_secret,
             "refresh_token": refresh_token,
             "grant_type": "refresh_token",
-        }
-    ).encode()
-    req = urllib.request.Request(
-        token_url,
-        data=data,
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/x-www-form-urlencoded",
         },
-        method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310
-            return json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"Token refresh failed {e.code}: {e.read().decode()}") from e
