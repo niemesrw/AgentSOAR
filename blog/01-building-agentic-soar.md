@@ -49,26 +49,39 @@ This is a meaningful shift from traditional SOAR case management. Instead of a p
 
 ### How it works technically
 
-AgentCore Gateway supports MCP servers as tool providers. We configure the [GitHub MCP server](https://github.com/github/github-mcp-server) in the Gateway, store credentials in Secrets Manager, and the agent gets GitHub tools natively: create issue, open PR, search code, add comment, assign label.
+The short version: we wrote our own OAuth layer. Here's why.
+
+AgentCore has a built-in Identity service for OAuth — `USER_FEDERATION` — that's supposed to handle token acquisition and storage. We spent time trying to make it work for GitHub. The Custom Resource lifecycle (a Lambda that runs during CDK deploy to register the credential provider), the token vault dance, and the workload token exchange were all moving pieces that didn't compose cleanly. We hit errors at each layer and couldn't find enough documentation to debug our way through.
+
+So we cut it. We wrote a thin OAuth2 module we own entirely and moved on.
 
 #### What we built
 
-Three files, one CDK update:
+**`tools/oauth/`** — a generic per-user, per-provider OAuth2 module:
 
-- **`gateway/tools/github/github_lambda.py`** — Lambda that wraps the GitHub REST API using stdlib `urllib` (no external dependencies). Reads a GitHub PAT from Secrets Manager (cached per container). Handles six tools: `github_create_issue`, `github_update_issue`, `github_add_comment`, `github_list_issues`, `github_create_pr`, `github_search_issues`.
-- **`gateway/tools/github/tool_spec.json`** — JSON schema definitions for each tool, with descriptions tuned for a SOAR context.
-- **`infra-cdk/lib/backend-stack.ts`** — A new `CfnGatewayTarget` pointing at the GitHub Lambda, a Secrets Manager secret for the PAT, and the necessary IAM grants.
+- `providers.py` — GitHub, Slack, and Gmail configured; add a new provider by adding one entry
+- `store.py` — per-user token storage in SSM SecureString at `/{stack}/oauth-token/{provider}/{user_id}`
+- `device_flow.py` — [RFC 8628](https://datatracker.ietf.org/doc/html/rfc8628) device authorization (GitHub's flow — no callback URL required, works from the agent chat)
+- `web_flow.py` — [RFC 7636](https://datatracker.ietf.org/doc/html/rfc7636) Authorization Code + PKCE (Slack, Gmail, anything with a redirect URI)
 
-After `cdk deploy`, populate the PAT:
+**`tools/github/strands_tools.py`** — `make_github_tools(user_id)` returns eight Strands `@tool` functions bound to the current user: connect, disconnect, list/create/update issues, add comments, create PRs, search.
 
-```bash
-# Get the secret ARN from the stack output GitHubPatSecretArn, then:
-aws secretsmanager put-secret-value \
-  --secret-id <GitHubPatSecretArn> \
-  --secret-string "ghp_your_token_here"
+**`infra-cdk/lambdas/oauth-callback/`** — a single generic Lambda handles the PKCE code exchange for any web-flow provider. Register its URL once as the redirect URI in your OAuth app.
+
+GitHub credentials (client ID + secret) are stored in Secrets Manager at `/{stack}/oauth-creds/github` via `scripts/configure-oauth.py`. User tokens live in SSM, one parameter per user per provider, isolated and auto-refreshed where the provider supports it (GitHub tokens don't expire, so no refresh needed there).
+
+#### Connecting GitHub from the agent
+
+From the chat UI, the user just types something like *"connect my GitHub account"* and the agent calls `github_connect`:
+
+```
+1. Open: https://github.com/login/device
+2. Enter code: ABCD-1234
+3. Click Authorize
+4. Come back here and call github_connect again to confirm
 ```
 
-The agent now has GitHub as a native tool — no additional configuration in the agent code needed. The Gateway discovers the tools automatically via MCP.
+That's it. No redirect URLs, no browser pop-ups from the agent. The device flow works headlessly from a chat interface. Call `github_connect` again after authorizing and the token is stored — all subsequent GitHub tool calls use it automatically.
 
 ---
 
@@ -190,24 +203,17 @@ pattern: agui-strands-agent
 
 CDK re-builds and pushes a new container image on the next deploy. The Runtime update took about 8 seconds.
 
-### Wiring up the GitHub PAT
+### Wiring up GitHub OAuth
 
-After deploy, the GitHub Gateway tool exists but has a CDK-generated random placeholder in Secrets Manager — it won't authenticate until you replace it with a real token.
-
-1. Create a GitHub PAT at https://github.com/settings/tokens/new
-   - Note: `AgentSOAR-gateway`
-   - Scopes: **`repo`** (covers issues, PRs, comments)
-
-2. Store it:
+After deploy, store your GitHub OAuth app credentials (client ID + secret) using the configure script:
 
 ```bash
-aws secretsmanager put-secret-value \
-  --secret-id /AgentSOAR/github-pat \
-  --secret-string "ghp_your_token_here" \
-  --profile your-profile
+python scripts/configure-oauth.py --provider github --profile your-profile
 ```
 
-No redeploy needed — the Lambda fetches the secret on cold start and caches it per container. The next invocation picks it up automatically.
+The script prompts for your client ID and secret and stores them in Secrets Manager at `/{stack}/oauth-creds/github`. Create a GitHub OAuth App at **Settings → Developer settings → OAuth Apps** if you don't have one — the callback URL from the CDK output `OAuthCallbackUrl` goes in the **Authorization callback URL** field (used for Slack/Gmail web-flow; GitHub device flow doesn't need it but GitHub requires the field to be set).
+
+No redeploy needed after storing credentials. Users connect their own GitHub accounts from the agent chat — see above.
 
 ### It works
 
@@ -221,7 +227,7 @@ The baseline FAST chat UI — logged in, agent running on Claude Sonnet 4.6 via 
 
 - [x] Forked FAST as AgentSOAR
 - [x] Deployed to AWS (CDK + Amplify)
-- [x] GitHub MCP server configured in AgentCore Gateway
+- [x] GitHub OAuth connected (device flow, per-user tokens)
 - [ ] First incident scenario end-to-end
 - [ ] Log ingestion pipeline
 - [ ] Self-improvement loop demo
@@ -232,7 +238,8 @@ The baseline FAST chat UI — logged in, agent running on Claude Sonnet 4.6 via 
 
 - **OrbStack PATH issue**: CDK spawns Docker as a subprocess and inherits the shell PATH at launch time. If Docker wasn't in PATH when you opened the terminal, CDK can't find it even after OrbStack starts. Prefix with `PATH=...` or restart the terminal.
 - **No personal data in config**: Committing `admin_user_email` to a public repo is a bad idea — Copilot caught it in code review. Keep it local.
-- **`cdk deploy` does more than you think**: AgentCore Runtime, Gateway, Memory, OAuth2 credential provider Lambda, Cognito, CloudFront, Amplify — all in one command. The FAST template earns its name.
+- **`cdk deploy` does more than you think**: AgentCore Runtime, Gateway, Memory, Cognito, CloudFront, Amplify — all in one command. The FAST template earns its name.
+- **AgentCore Identity isn't ready for this use case**: FAST ships with an AgentCore Identity `USER_FEDERATION` setup for OAuth. We spent time trying to make it work for GitHub and hit dead ends at every layer — Custom Resource lifecycle errors, token vault auth, workload token exchange. The docs don't cover the failure modes. We cut it and wrote a thin RFC 8628 / RFC 7636 OAuth module instead. Took less time than debugging the managed version.
 - **Default model and pattern aren't production-ready**: The shipped defaults (`strands-single-agent`, `us.anthropic.claude-sonnet-4-5`) caused an immediate `AccessDeniedException`. Check `list-inference-profiles` for what's actually ACTIVE in your account, use the `global.*` prefix for best availability, and pick the agent pattern that matches your frontend parser before first deploy.
 
 ---
