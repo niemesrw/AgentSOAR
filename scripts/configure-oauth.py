@@ -16,7 +16,7 @@ Usage:
 """
 
 # /// script
-# dependencies = ["boto3", "pyyaml"]
+# dependencies = ["boto3", "pyyaml", "colorama"]
 # ///
 
 import argparse

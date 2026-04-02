@@ -17,6 +17,16 @@ The blog documenting the build lives in `blog/`. Update the relevant post in the
 
 - Container runtime: **OrbStack** (not Docker Desktop). CDK Python Lambda bundling uses OrbStack's Docker-compatible socket — ensure OrbStack is running before `cdk deploy`.
 
+## AWS Profiles
+
+- **`blanxlait-ai`** — primary profile for this project (AgentSOAR deploys here)
+- **`management-admin`** — management/admin account access
+
+When AWS credentials are needed, use `--profile blanxlait-ai` (or set `AWS_PROFILE=blanxlait-ai`). If the session is expired, run:
+```bash
+aws sso login --profile blanxlait-ai
+```
+
 ## Architecture
 
 - **Agent pattern**: `agui-strands-agent` (AG-UI streaming, Strands backend)
