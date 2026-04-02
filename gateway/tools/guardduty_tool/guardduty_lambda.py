@@ -188,7 +188,7 @@ def get_guardduty_findings(
 
     criteria: dict[str, Any] = {
         "Criterion": {
-            "severity": {"GreaterThanOrEqual": min_score},
+            "severity": {"GreaterThanOrEqual": int(min_score)},
             # Exclude suppressed/archived findings — only return actionable active findings
             "service.archived": {"Eq": ["false"]},
         }
