@@ -304,7 +304,7 @@ interactively. Asking "do we have any GuardDuty findings?" returned 10 live org-
 findings — 1 CRITICAL, 4 HIGH, 5 MEDIUM — pulled from the Security account's
 delegated admin detector via the cross-account role:
 
-![AgentSOAR UI showing 10 live GuardDuty findings by severity](assets/guardduty-ui-findings.png)
+![AgentSOAR UI showing 10 live GuardDuty findings by severity](images/guardduty-ui-findings.png)
 
 The CRITICAL finding (`AttackSequence:IAM/CompromisedCredentials` on the `root/niemesrw`
 principal) and the HIGH S3 deletion API anomaly are real behavioral detections, not
