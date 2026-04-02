@@ -123,6 +123,8 @@ Three categories, eight issues — AWS Security Hub, GuardDuty, CloudTrail for i
 
 This is the backlog the platform will build against.
 
+![GitHub issues list showing all 9 open issues with labels](images/github-issues-list.png)
+
 ---
 
 ## Step 2: Closing the Self-Improvement Loop
