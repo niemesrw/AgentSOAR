@@ -83,6 +83,8 @@ From the chat UI, the user just types something like *"connect my GitHub account
 
 That's it. No redirect URLs, no browser pop-ups from the agent. The device flow works headlessly from a chat interface. Call `github_connect` again after authorizing and the token is stored — all subsequent GitHub tool calls use it automatically.
 
+![GitHub device flow connect UX in AgentSOAR](images/github-oauth-connect.png)
+
 ---
 
 ## Step 2: Closing the Self-Improvement Loop
