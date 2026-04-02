@@ -723,7 +723,7 @@ export class BackendStack extends cdk.NestedStack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       timeToLiveAttribute: "ttl",
       encryption: dynamodb.TableEncryption.AWS_MANAGED,
-      pointInTimeRecovery: true,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     })
     // GSI used by list_guardduty_findings_since to query by ingest time within a date bucket.
@@ -798,7 +798,7 @@ export class BackendStack extends cdk.NestedStack {
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: ["bedrock-agentcore:InvokeAgentRuntime"],
-        resources: [this.runtimeArn],
+        resources: [`arn:aws:bedrock-agentcore:${this.region}:${this.account}:runtime/*`],
       })
     )
 
