@@ -185,13 +185,12 @@ aggregated in the **Security account**, the Lambda must either:
   role and target a role in the Security account that has the GuardDuty read
   permissions. Pass the assumed credentials when constructing the boto3 client.
 
-For the initial setup AgentSOAR assumes the Lambda and GuardDuty aggregation account
-are the same. Cross-account role assumption support is tracked as a future
-enhancement.
+Both patterns are supported. See the cross-account role assumption section below
+for the implementation used in Blanxlait's setup.
 
 ## What was added
 
-### Four gateway tools (`gateway/tools/guardduty_tool/`)
+### Five gateway tools (`gateway/tools/guardduty_tool/`)
 
 | Tool | What it does |
 |------|-------------|
@@ -199,17 +198,30 @@ enhancement.
 | `describe_guardduty_finding` | Human-readable explanation: type, severity, affected resource, actor geo |
 | `archive_guardduty_finding` | Suppress confirmed false positives or remediated findings |
 | `triage_guardduty_finding` | 4-step automated playbook: classify → enrich → risk score → remediation steps |
+| `list_guardduty_findings_since` | Query the local DynamoDB store for findings ingested in the last N hours |
 
-All four are backed by a single Lambda (`guardduty_lambda.py`) that the AgentCore
+All five are backed by a single Lambda (`guardduty_lambda.py`) that the AgentCore
 Gateway routes to via a `CfnGatewayTarget`.
 
-### EventBridge ingestion
+### EventBridge ingestion and autonomous triage
 
 An EventBridge rule on `aws.guardduty` / `GuardDuty Finding` feeds new findings
 directly into the Lambda in near-real time. The handler detects EventBridge
 invocations by checking `event["source"] == "aws.guardduty"` and routes them to a
 separate `_handle_eventbridge()` path — EventBridge does not set `client_context`,
 so it must be dispatched before the Gateway tool path is attempted.
+
+When a finding arrives, `_handle_eventbridge` does three things:
+
+1. **Stores** the finding summary in a DynamoDB table (`AgentSOAR-guardduty-findings`)
+   with a 30-day TTL and a time-based GSI for range queries.
+2. **Invokes** the AgentCore Runtime asynchronously with a triage prompt, so the
+   agent runs the 4-step playbook without any human trigger.
+3. **Returns 200** immediately — the agent invocation runs in a daemon thread within
+   the Lambda's execution window.
+
+The DynamoDB store powers `list_guardduty_findings_since`, which lets the agent
+answer "what came in while I was away?" without hitting the live GuardDuty API.
 
 ## Design decisions
 
@@ -286,18 +298,24 @@ One thing to note: **sample findings take ~4 minutes** to generate an EventBridg
 event after `create-sample-findings` returns. Real findings are faster. Don't mistake
 silence for a broken pipeline — check CloudWatch metrics before debugging the wiring.
 
-**What the Lambda does today:** logs the finding id, type, and severity, then returns
-200. The agent is not yet invoked automatically. That's the next piece of work — see
-below.
+**Interactive triage via the UI** — with the Gateway tools wired up and the correct
+runtime ARN deployed to Amplify, the agent can already answer GuardDuty questions
+interactively. Asking "do we have any GuardDuty findings?" returned 10 live org-wide
+findings — 1 CRITICAL, 4 HIGH, 5 MEDIUM — pulled from the Security account's
+delegated admin detector via the cross-account role:
+
+![AgentSOAR UI showing 10 live GuardDuty findings by severity](images/guardduty-ui-findings.png)
+
+The CRITICAL finding (`AttackSequence:IAM/CompromisedCredentials`) and the HIGH S3
+deletion API anomaly are real behavioral detections against live org activity, not
+sample data.
 
 ## What's next
 
-- **Invoke the agent on new findings** — wire `_handle_eventbridge` to call the
-  AgentCore Runtime with a triage prompt, closing the loop from detection to
-  automated response.
-- **Findings store** — push ingested findings into DynamoDB so the agent can answer
-  "what came in while I was away?" with a `list_guardduty_findings_since` tool.
-- ~~**Cross-account GuardDuty API calls**~~ — Done. See below.
+- **AG-UI streaming triage** — surface the 4-step triage playbook as a real-time
+  AG-UI stream so each step appears as the agent reasons, rather than waiting for
+  the full report. When `_handle_eventbridge` invokes the agent autonomously, push
+  the stream to a findings panel in the UI.
 - **Extend triage playbooks** with account-specific runbooks loaded from SSM.
 
 ## Cross-account role assumption pattern

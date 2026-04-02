@@ -385,3 +385,110 @@ class TestHandler:
         criterion = call_kwargs["FindingCriteria"]["Criterion"]
         assert "service.archived" in criterion
         assert criterion["service.archived"] == {"Eq": ["false"]}
+
+    def test_eventbridge_stores_finding(self, guardduty_module, mock_boto3):
+        """_handle_eventbridge must attempt to write to DynamoDB when FINDINGS_TABLE is set."""
+        mock_table = MagicMock()
+        mock_resource = MagicMock()
+        mock_resource.Table.return_value = mock_table
+
+        event = {
+            "source": "aws.guardduty",
+            "account": "123456789012",
+            "region": "us-east-1",
+            "detail": {
+                "id": "store-test-1",
+                "type": "UnauthorizedAccess:EC2/SSHBruteForce",
+                "severity": 7.5,
+                "region": "us-east-1",
+                "accountId": "123456789012",
+            },
+        }
+        with patch.dict(guardduty_module.os.environ, {"FINDINGS_TABLE": "test-findings-table"}):
+            with patch("boto3.resource", return_value=mock_resource):
+                resp = guardduty_module.handler(event, None)
+
+        assert resp.get("statusCode") == 200
+        mock_table.put_item.assert_called_once()
+        item = mock_table.put_item.call_args[1]["Item"]
+        assert item["findingId"] == "store-test-1"
+        assert item["severityLabel"] == "HIGH"
+
+    def test_eventbridge_no_table_no_crash(self, guardduty_module, mock_boto3):
+        """_handle_eventbridge must not crash when FINDINGS_TABLE is absent."""
+        event = {
+            "source": "aws.guardduty",
+            "detail": {
+                "id": "no-table-test",
+                "type": "Recon:EC2/PortProbeUnprotectedPort",
+                "severity": 3.0,
+            },
+        }
+        with patch.dict(guardduty_module.os.environ, {}, clear=False):
+            guardduty_module.os.environ.pop("FINDINGS_TABLE", None)
+            resp = guardduty_module.handler(event, None)
+        assert resp.get("statusCode") == 200
+
+
+# ---------------------------------------------------------------------------
+# list_guardduty_findings_since tests
+# ---------------------------------------------------------------------------
+
+
+class TestListGuarddutyFindingsSince:
+    def test_no_table_configured(self, guardduty_module, mock_boto3):
+        with patch.dict(guardduty_module.os.environ, {}, clear=False):
+            guardduty_module.os.environ.pop("FINDINGS_TABLE", None)
+            result = guardduty_module.list_guardduty_findings_since()
+        assert "not configured" in result
+
+    def test_returns_findings(self, guardduty_module, mock_boto3):
+        mock_table = MagicMock()
+        mock_table.query.return_value = {
+            "Items": [
+                {
+                    "findingId": "abc123",
+                    "findingType": "UnauthorizedAccess:EC2/SSHBruteForce",
+                    "severityLabel": "MEDIUM",
+                    "accountId": "123456789012",
+                    "region": "us-east-1",
+                    "ingestedAt": "2024-01-01T00:00:00+00:00",
+                    "ingestedAtEpoch": 1704067200,
+                }
+            ]
+        }
+        mock_resource = MagicMock()
+        mock_resource.Table.return_value = mock_table
+
+        with patch.dict(guardduty_module.os.environ, {"FINDINGS_TABLE": "test-table"}):
+            with patch("boto3.resource", return_value=mock_resource):
+                result = guardduty_module.list_guardduty_findings_since(hours=24)
+
+        assert "abc123" in result
+        assert "MEDIUM" in result
+
+    def test_no_findings(self, guardduty_module, mock_boto3):
+        mock_table = MagicMock()
+        mock_table.query.return_value = {"Items": []}
+        mock_resource = MagicMock()
+        mock_resource.Table.return_value = mock_table
+
+        with patch.dict(guardduty_module.os.environ, {"FINDINGS_TABLE": "test-table"}):
+            with patch("boto3.resource", return_value=mock_resource):
+                result = guardduty_module.list_guardduty_findings_since(hours=6)
+
+        assert "No GuardDuty findings ingested" in result
+        assert "6 hour" in result
+
+    def test_dispatch_list_findings_since(self, guardduty_module, mock_boto3):
+        mock_table = MagicMock()
+        mock_table.query.return_value = {"Items": []}
+        mock_resource = MagicMock()
+        mock_resource.Table.return_value = mock_table
+
+        ctx = _make_context("list_guardduty_findings_since")
+        with patch.dict(guardduty_module.os.environ, {"FINDINGS_TABLE": "test-table"}):
+            with patch("boto3.resource", return_value=mock_resource):
+                resp = guardduty_module.handler({"hours": 12}, ctx)
+
+        assert "content" in resp

@@ -82,5 +82,19 @@
       },
       "required": ["finding_id"]
     }
+  },
+  {
+    "name": "list_guardduty_findings_since",
+    "description": "List GuardDuty findings that were automatically ingested by AgentSOAR via EventBridge in the last N hours. Useful for reviewing what happened while the agent was not actively queried. Returns findings from the local DynamoDB store, not the live GuardDuty API.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "hours": {
+          "type": "integer",
+          "description": "Look-back window in hours (1-168). Defaults to 24."
+        }
+      },
+      "required": []
+    }
   }
 ]
