@@ -38,6 +38,22 @@ aws sso login --profile blanxlait-ai
 
 - **Screenshot filenames**: macOS uses a Unicode narrow no-break space (U+202F) between the time and AM/PM in screenshot filenames (e.g. `Screenshot 2026-04-01 at 2.01.18 PM.png`). Normal `cp` with a regular space will fail. Use: `cp $'...path with \u202f...' destination`
 
+## Publishing a Blog Post
+
+To publish a post from `blog/` to ryanniemes.com:
+
+```bash
+python scripts/publish_post.py blog/01-building-agentic-soar.md --tags aws,security,ai
+```
+
+This fires a `repository_dispatch` to `niemesrw/ryanniemes.com`. That repo's workflow ingests the post, copies images, commits to main, and Cloudflare Pages deploys automatically.
+
+Add `--draft` to open a PR instead of deploying live.
+
+The `ryanniemes.com` workflow requires a `PUBLISH_TOKEN` secret (a GitHub PAT with `repo` scope on `niemesrw/ryanniemes.com`).
+
+---
+
 ## Adding a Gateway Tool
 
 1. Create `gateway/tools/<name>/<name>_lambda.py` following the handler pattern in `gateway/tools/sample_tool/`
