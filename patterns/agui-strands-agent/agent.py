@@ -164,10 +164,12 @@ def _make_investigation_tool(session_id: str):
             description="Deep incident investigation specialist",
             a2a_client_factory=client_factory,
         )
-        return remote_agent(
-            f"Investigate GuardDuty finding {finding_id} in account {account_id} region {region}. "
-            "Correlate with CloudTrail, build an event timeline, and assess blast radius."
-        ).message
+        return str(
+            remote_agent(
+                f"Investigate GuardDuty finding {finding_id} in account {account_id} region {region}. "
+                "Correlate with CloudTrail, build an event timeline, and assess blast radius."
+            )
+        )
 
     return investigate_finding
 
