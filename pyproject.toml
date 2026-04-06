@@ -33,27 +33,19 @@ dependencies = [
 
 [project.optional-dependencies]
 # Development dependencies
-dev = ["pytest>=7.0.0", "ruff>=0.1.0", "mypy>=1.0.0"]
+dev = ["pytest>=7.0.0", "ruff>=0.1.0", "mypy>=1.0.0", "pre-commit>=3.0.0"]
 
-# Strands agent dependencies (for local development)
+# Strands agent dependencies (for local development + A2A contract tests)
 agent-strands = [
-    "strands-agents==1.16.0",
-    "bedrock-agentcore[strands-agents]==1.0.6",
-    "mcp==1.21.0",
-]
-
-# LangGraph agent dependencies (for local development)
-agent-langgraph = [
-    "langgraph==1.0.3",
-    "langchain-aws==1.0.0",
-    "langchain-mcp-adapters==0.1.13",
-    "langgraph-checkpoint-aws==1.0.1",
-    "mcp==1.21.0",
+    "strands-agents==1.32.0",
+    "bedrock-agentcore==1.4.7",
+    "a2a-sdk==0.3.24",
+    "fastapi>=0.100.0",
 ]
 
 # All dependencies for local development
 all = [
-    "fullstack-agentcore-solution-template[dev,agent-strands,agent-langgraph]",
+    "fullstack-agentcore-solution-template[dev,agent-strands]",
 ]
 
 [project.urls]
@@ -90,3 +82,8 @@ testpaths = ["tests"]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+
+[dependency-groups]
+dev = [
+    "a2a-sdk==0.3.24",
+]

@@ -7,6 +7,23 @@
 - Include the blog post update in the same PR as the code it documents.
 - Always use `uv` to run Python tools and scripts (e.g. `uv run pytest`, `uv run ruff check`). Never invoke `python`, `pip`, or `pytest` directly.
 - Before pushing Python changes, run `uv run ruff check && uv run ruff format --check`.
+- Before pushing changes to `patterns/`, validate A2A API contracts locally:
+  ```bash
+  uv run pytest tests/unit/test_a2a_contracts.py -q
+  ```
+  This catches import errors and API signature mismatches without a deploy cycle.
+- Pre-commit hooks enforce lint + A2A contracts automatically. Install once with:
+  ```bash
+  uv run pre-commit install
+  ```
+
+## Deploy trigger paths
+
+The Deploy workflow only fires on changes to `infra-cdk/**` or `gateway/**`.
+Changes to `patterns/**` (agent code) require a manual deploy trigger:
+```bash
+gh workflow run deploy.yml --repo niemesrw/AgentSOAR --ref main
+```
 
 ## Project Context
 
