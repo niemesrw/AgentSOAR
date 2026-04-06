@@ -1,0 +1,95 @@
+name: Deploy AgentSOAR
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infra-cdk/**'
+      - 'gateway/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  MANAGEMENT_ACCOUNT: '982682372189'
+  SECURITY_ACCOUNT: '429971481640'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Ruff check
+        run: uv run ruff check gateway/
+
+      - name: Ruff format check
+        run: uv run ruff format --check gateway/
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: infra-cdk/package-lock.json
+
+      - name: Install CDK dependencies
+        working-directory: infra-cdk
+        run: npm ci
+
+      - name: TypeScript build
+        working-directory: infra-cdk
+        run: npm run build
+
+      - name: CDK tests
+        working-directory: infra-cdk
+        run: npm test
+
+  deploy:
+    needs: lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: infra-cdk/package-lock.json
+
+      - name: Configure AWS credentials (Management)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.MANAGEMENT_ACCOUNT }}:role/GitHubActionsRole
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Assume role in Security account
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.SECURITY_ACCOUNT }}:role/GitHubDeployRole
+          aws-region: ${{ env.AWS_REGION }}
+          role-chaining: true
+
+      - name: Install CDK dependencies
+        working-directory: infra-cdk
+        run: npm ci
+
+      - name: CDK diff
+        working-directory: infra-cdk
+        run: npx cdk diff
+
+      - name: CDK deploy
+        working-directory: infra-cdk
+        run: npx cdk deploy --all --require-approval never
