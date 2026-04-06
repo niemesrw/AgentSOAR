@@ -1,0 +1,103 @@
+<svg width="720" height="636" viewBox="0 0 720 636" xmlns="http://www.w3.org/2000/svg" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+
+  <defs>
+    <!-- Standard arrowhead -->
+    <marker id="ah" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+      <path d="M0,0 L0,7 L9,3.5 Z" fill="#6b7280"/>
+    </marker>
+    <!-- Lighter arrowhead for dashed async lines -->
+    <marker id="ah-light" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+      <path d="M0,0 L0,7 L9,3.5 Z" fill="#9ca3af"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="720" height="636" fill="#f9fafb" rx="12"/>
+
+  <!-- ── Section backgrounds ─────────────────────────────────────── -->
+  <!-- STORE band -->
+  <rect x="12" y="12" width="696" height="320" rx="8" fill="white" stroke="#e5e7eb" stroke-width="1"/>
+  <!-- RETRIEVE band -->
+  <rect x="12" y="344" width="696" height="280" rx="8" fill="white" stroke="#e5e7eb" stroke-width="1"/>
+
+  <!-- Section labels -->
+  <text x="28" y="34" font-size="10" font-weight="600" fill="#9ca3af" letter-spacing="1.5">STORE</text>
+  <text x="28" y="364" font-size="10" font-weight="600" fill="#9ca3af" letter-spacing="1.5">RETRIEVE</text>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       STORE SECTION
+  ══════════════════════════════════════════════════════════════ -->
+
+  <!-- Box 1: Conversation turn -->
+  <rect x="260" y="44" width="200" height="44" rx="8" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="360" y="70" text-anchor="middle" font-size="14" font-weight="600" fill="#1e3a5f">Conversation turn</text>
+
+  <!-- Arrow 1 → 2 -->
+  <line x1="360" y1="88" x2="360" y2="108" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <!-- Box 2: create_event() -->
+  <rect x="278" y="108" width="164" height="38" rx="8" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="360" y="131" text-anchor="middle" font-size="13" fill="#334155" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">create_event()</text>
+
+  <!-- Arrow 2 → 3 -->
+  <line x1="360" y1="146" x2="360" y2="166" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <!-- Box 3: Event log -->
+  <rect x="194" y="166" width="332" height="66" rx="8" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="360" y="192" text-anchor="middle" font-size="14" font-weight="700" fill="#4c1d95">Event log</text>
+  <text x="360" y="212" text-anchor="middle" font-size="11.5" fill="#6d28d9">short-term · 30-day TTL · structured storage</text>
+
+  <!-- Fork stem from box 3 bottom -->
+  <line x1="360" y1="232" x2="360" y2="265" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="5 3"/>
+
+  <!-- Fork horizontal → left -->
+  <polyline points="360,265 175,265 175,310" fill="none" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#ah-light)"/>
+  <!-- Fork horizontal → right -->
+  <polyline points="360,265 545,265 545,310" fill="none" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#ah-light)"/>
+
+  <!-- Async label pill -->
+  <rect x="244" y="252" width="232" height="20" rx="6" fill="#f3f4f6" stroke="#e5e7eb" stroke-width="1"/>
+  <text x="360" y="266" text-anchor="middle" font-size="10.5" fill="#6b7280" font-style="italic">Haiku extraction · async · minutes later</text>
+
+  <!-- Box 4L: CustomMemoryStrategy -->
+  <rect x="28" y="310" width="294" height="94" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="175" y="334" text-anchor="middle" font-size="12.5" font-weight="700" fill="#14532d">CustomMemoryStrategy</text>
+  <text x="175" y="352" text-anchor="middle" font-size="10.5" fill="#166534" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">/technical-issues/{actorId}</text>
+  <text x="175" y="369" text-anchor="middle" font-size="10.5" fill="#374151" font-style="italic">extracted incident facts</text>
+  <text x="175" y="386" text-anchor="middle" font-size="10" fill="#6b7280">relevance_score ≥ 0.3 · top_k 3</text>
+
+  <!-- Box 4R: SemanticMemoryStrategy -->
+  <rect x="398" y="310" width="294" height="94" rx="8" fill="#e0f2fe" stroke="#0284c7" stroke-width="1.5"/>
+  <text x="545" y="334" text-anchor="middle" font-size="12.5" font-weight="700" fill="#0c4a6e">SemanticMemoryStrategy</text>
+  <text x="545" y="352" text-anchor="middle" font-size="10.5" fill="#0369a1" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">/knowledge/{actorId}</text>
+  <text x="545" y="369" text-anchor="middle" font-size="10.5" fill="#374151" font-style="italic">environment &amp; infrastructure facts</text>
+  <text x="545" y="386" text-anchor="middle" font-size="10" fill="#6b7280">relevance_score ≥ 0.2 · top_k 5</text>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       RETRIEVE SECTION
+  ══════════════════════════════════════════════════════════════ -->
+
+  <!-- Convergence arrows: both strategy boxes → box 5 -->
+  <!-- Left box bottom-center (175, 404) → box 5 top-left area -->
+  <polyline points="175,404 175,456 310,456 310,476" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ah)"/>
+  <!-- Right box bottom-center (545, 404) → box 5 top-right area -->
+  <polyline points="545,404 545,456 410,456 410,476" fill="none" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <!-- "per user message" label -->
+  <rect x="262" y="445" width="196" height="18" rx="4" fill="#fff7ed" stroke="#fed7aa" stroke-width="1"/>
+  <text x="360" y="458" text-anchor="middle" font-size="10" fill="#9a3412" font-style="italic">triggered on each user message</text>
+
+  <!-- Box 5: retrieve_memories -->
+  <rect x="162" y="476" width="396" height="50" rx="8" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+  <text x="360" y="499" text-anchor="middle" font-size="13" font-weight="600" fill="#78350f">retrieve_memories()</text>
+  <text x="360" y="517" text-anchor="middle" font-size="10.5" fill="#92400e">cosine similarity search · both namespaces in parallel</text>
+
+  <!-- Arrow 5 → 6 -->
+  <line x1="360" y1="526" x2="360" y2="550" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <!-- Box 6: soar-memory-context -->
+  <rect x="136" y="550" width="448" height="66" rx="8" fill="#fdf4ff" stroke="#a855f7" stroke-width="1.5"/>
+  <text x="360" y="576" text-anchor="middle" font-size="13" font-weight="700" fill="#581c87" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">&lt;soar-memory-context&gt;</text>
+  <text x="360" y="596" text-anchor="middle" font-size="11" fill="#6b21a8">injected into prompt · model sees user question with prior incident context</text>
+
+</svg>

@@ -94,6 +94,7 @@ export class AgentCoreRole extends iam.Role {
               actions: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
               resources: [
                 "arn:aws:bedrock:*::foundation-model/*",
+                "arn:aws:bedrock:*:*:inference-profile/*", // cross-region inference profiles (used by Memory extraction)
                 `arn:aws:bedrock:${region}:${accountId}:*`,
               ],
             }),

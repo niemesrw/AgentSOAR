@@ -20,12 +20,12 @@ The blog documenting the build lives in `blog/`. Update the relevant post in the
 
 ## AWS Profiles
 
-- **`blanxlait-ai`** — primary profile for this project (AgentSOAR deploys here)
+- **`blanxlait-security`** — primary profile for this project (AgentSOAR deploys in the Security account, 429971481640)
 - **`management-admin`** — management/admin account access
 
-When AWS credentials are needed, use `--profile blanxlait-ai` (or set `AWS_PROFILE=blanxlait-ai`). If the session is expired, run:
+When AWS credentials are needed, use `--profile blanxlait-security` (or set `AWS_PROFILE=blanxlait-security`). If the session is expired, run:
 ```bash
-aws sso login --profile blanxlait-ai
+aws sso login --profile blanxlait-security
 ```
 
 ## Architecture

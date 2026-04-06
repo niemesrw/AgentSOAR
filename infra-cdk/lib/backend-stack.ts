@@ -234,15 +234,63 @@ export class BackendStack extends cdk.NestedStack {
     // Create AgentCore execution role
     const agentRole = new AgentCoreRole(this, "AgentCoreRole")
 
-    // Create memory resource with short-term memory (conversation history) as default
-    // To enable long-term strategies (summaries, preferences, facts), see docs/MEMORY_INTEGRATION.md
+    // Create memory resource with short-term (conversation history) + long-term strategies.
+    // CustomMemoryStrategy: extracts incident patterns into /technical-issues/{actorId}
+    // SemanticMemoryStrategy: accumulates environment knowledge into /knowledge/{actorId}
+    // Both namespaces are searched per-query via retrieval_config in agent.py.
     const memory = new cdk.CfnResource(this, "AgentMemory", {
       type: "AWS::BedrockAgentCore::Memory",
       properties: {
         Name: cdk.Names.uniqueResourceName(this, { maxLength: 48 }),
         EventExpiryDuration: 30,
-        Description: `Short-term memory for ${config.stack_name_base} agent`,
-        MemoryStrategies: [], // Empty array = short-term only (conversation history)
+        Description: `SOAR agent memory — short-term sessions + long-term incident knowledge for ${config.stack_name_base}`,
+        MemoryStrategies: [
+          {
+            CustomMemoryStrategy: {
+              Name: "SOARIncidentTracker",
+              Namespaces: ["/technical-issues/{actorId}"],
+              Configuration: {
+                SemanticOverride: {
+                  Extraction: {
+                    AppendToPrompt: [
+                      "Human: You are a memory extraction agent for a cloud security SOAR platform. Extract:",
+                      "1. Security incidents and findings investigated (GuardDuty, CloudTrail anomalies)",
+                      "2. Affected AWS resources — ARNs, account IDs, regions, and their context",
+                      "3. Threat actor indicators — IPs, user agents, IAM principals",
+                      "4. Triage conclusions: confirmed threat, false positive, or needs investigation",
+                      "5. Remediation actions taken or recommended",
+                      "6. Known-good baselines — authorized pen test vendors, expected automation accounts, approved access patterns",
+                      "",
+                      "Only extract explicitly stated facts. Ignore greetings and off-topic conversation.",
+                      "Format each fact as a clear, concise statement usable as a future investigation reference.",
+                      "Assistant:",
+                    ].join("\n"),
+                    ModelId: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                  },
+                  Consolidation: {
+                    AppendToPrompt: [
+                      "Human: You are a security knowledge manager for a cloud SOAR platform. When consolidating security memories:",
+                      "- Preserve exact finding IDs, resource ARNs, and timestamps — do not paraphrase",
+                      "- Update threat actor details while keeping the full investigation timeline intact",
+                      "- Merge related incidents while preserving each finding's complete context",
+                      "- Prioritize confirmed threats over suspected ones; mark false positives clearly",
+                      "- Maintain strict separation between different AWS accounts and regions",
+                      "- Preserve exact IP addresses, IAM principal names, and API call sequences",
+                      "Assistant:",
+                    ].join("\n"),
+                    ModelId: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                  },
+                },
+              },
+            },
+          },
+          {
+            SemanticMemoryStrategy: {
+              Name: "SOARKnowledge",
+              Namespaces: ["/knowledge/{actorId}"],
+            },
+          },
+        ],
         MemoryExecutionRoleArn: agentRole.roleArn,
         Tags: {
           Name: `${config.stack_name_base}_Memory`,

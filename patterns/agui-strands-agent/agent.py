@@ -9,7 +9,10 @@ import os
 
 from ag_ui.core import RunAgentInput, RunErrorEvent
 from ag_ui_strands import StrandsAgent
-from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig
+from bedrock_agentcore.memory.integrations.strands.config import (
+    AgentCoreMemoryConfig,
+    RetrievalConfig,
+)
 from bedrock_agentcore.memory.integrations.strands.session_manager import (
     AgentCoreMemorySessionManager,
 )
@@ -51,7 +54,21 @@ def _create_session_manager(
     if not memory_id:
         raise ValueError("MEMORY_ID environment variable is required")
     config = AgentCoreMemoryConfig(
-        memory_id=memory_id, session_id=session_id, actor_id=user_id
+        memory_id=memory_id,
+        session_id=session_id,
+        actor_id=user_id,
+        # Search long-term memory namespaces before each user message.
+        # The session manager's MessageAddedEvent hook retrieves relevant records
+        # from both namespaces and injects them as <soar-memory-context> in the prompt.
+        # Namespaces are populated by the CustomMemoryStrategy / SemanticMemoryStrategy
+        # configured on the Memory resource in backend-stack.ts.
+        retrieval_config={
+            "/technical-issues/{actorId}": RetrievalConfig(
+                top_k=3, relevance_score=0.3
+            ),
+            "/knowledge/{actorId}": RetrievalConfig(top_k=5, relevance_score=0.2),
+        },
+        context_tag="soar-memory-context",
     )
     return AgentCoreMemorySessionManager(
         agentcore_memory_config=config,
