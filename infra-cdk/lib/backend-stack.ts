@@ -37,6 +37,8 @@ export class BackendStack extends cdk.NestedStack {
   public feedbackApiUrl: string
   public runtimeArn: string
   public memoryArn: string
+  public memoryId: string
+  public machineClientId: string
   private agentName: cdk.CfnParameter
   private userPool: cognito.IUserPool
   private machineClient: cognito.UserPoolClient
@@ -301,8 +303,9 @@ export class BackendStack extends cdk.NestedStack {
     const memoryId = memory.getAtt("MemoryId").toString()
     const memoryArn = memory.getAtt("MemoryArn").toString()
 
-    // Store the memory ARN for access from main stack
+    // Store memory IDs for access from main stack (used by InvestigationAgentStack)
     this.memoryArn = memoryArn
+    this.memoryId = memoryId
 
     // Add memory-specific permissions to agent role
     agentRole.addToPolicy(
@@ -1271,6 +1274,9 @@ export class BackendStack extends cdk.NestedStack {
 
     // Machine client must be created after resource server
     this.machineClient.node.addDependency(resourceServer)
+
+    // Expose machine client ID for InvestigationAgentStack JWT authorizer config
+    this.machineClientId = this.machineClient.userPoolClientId
 
     // Store machine client secret in Secrets Manager for testing and external access.
     // This secret is used by test scripts and potentially other external tools.

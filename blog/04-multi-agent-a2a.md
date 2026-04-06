@@ -157,197 +157,194 @@ run extraction in the background to promote relevant facts into the long-term na
 
 ### The target architecture
 
-The single agent becomes an orchestrating host agent. Specialized sub-agents handle
-the distinct phases of incident response:
+The single agent becomes an orchestrating host agent. The Investigation Agent is the
+first specialized sub-agent, running on its own AgentCore Runtime and communicating
+over A2A:
 
 ```
 Incident (GuardDuty finding, CloudTrail anomaly, manual query)
         │
         ▼
-Orchestrator Agent  ─── agui-strands-agent (existing, gains A2A delegation)
+Orchestrator Agent  ─── agui-strands-agent (gains investigate_finding tool)
         │
-        ├──► Investigation Agent   ─── GuardDuty + CloudTrail deep analysis
-        │                              (separate AgentCore Runtime)
-        │
-        ├──► Playbook Agent        ─── runbook lookup, containment steps
-        │                              (separate AgentCore Runtime)
-        │
-        └──► Notification Agent    ─── Slack + GitHub issue creation
-                                       (separate AgentCore Runtime)
+        └──► Investigation Agent   ─── GuardDuty + CloudTrail deep analysis
+                                       (separate AgentCore Runtime, A2A/HTTP)
 ```
 
-Each sub-agent runs as an A2A server (Starlette + `a2a-sdk`). The orchestrator
-discovers them via their Agent Cards (`/.well-known/agent-card.json`) and delegates
-via `RemoteA2aAgent` instances wired as Strands sub-agents.
+Playbook and Notification agents follow the same pattern — deploy each as a new
+`AgentCore Runtime` with `HTTP` protocol, wire it into the orchestrator via `A2AAgent`.
 
 ### Why not just add more tools to the single agent?
 
-Tools don't isolate failure. If the investigation step takes 30 seconds pulling
-CloudTrail events, the notification step waits. With sub-agents, the orchestrator can
-run investigation and playbook lookup concurrently — standard A2A parallel delegation.
+Tools don't isolate failure or permissions. The investigation agent needs read access to
+GuardDuty and CloudTrail across accounts — scoping that to a separate IAM execution role
+on a separate runtime is significantly cleaner than adding it to the orchestrator's role
+alongside Slack write access and GitHub write access.
 
-Tools also don't isolate permissions. The investigation agent needs read access to
-GuardDuty and CloudTrail across accounts. The notification agent needs write access
-to Slack and GitHub. The playbook agent eventually needs execute access to SSM Run
-Command and EC2 actions. Scoping these as separate IAM execution roles on separate
-runtimes is significantly cleaner than one agent execution role that holds all of it.
+Sub-agents are also independently deployable. The investigation agent can be updated
+with a new tool without redeploying the orchestrator or touching the frontend.
 
-Finally, sub-agents are independently testable and independently deployable. The
-investigation agent can be updated with a new tool without redeploying the
-orchestrator.
+Finally, sub-agents compose naturally. Once the playbook agent exists, the orchestrator
+can delegate investigation and playbook lookup concurrently — standard A2A parallel
+delegation.
 
-### A2A agent card and server
+### The A2A server
 
-Each sub-agent implements a standard A2A server. The investigation agent looks like:
+Strands 1.x includes `A2AServer` in `strands.multiagent.a2a` — native A2A support
+without needing to implement `AgentExecutor` or `TaskUpdater` manually. The
+investigation agent's server is three lines:
 
 ```python
 # patterns/investigation-agent/main.py
 
-from a2a.server.apps import A2AStarletteApplication
-from a2a.server.request_handlers import DefaultRequestHandler
-from a2a.types import AgentCard, AgentSkill, AgentCapabilities
+from strands.multiagent.a2a import A2AServer
 
-agent_card = AgentCard(
-    name="Investigation Agent",
-    description="Correlates GuardDuty findings with CloudTrail audit logs for deep incident analysis",
-    url=f"https://bedrock-agentcore.{region}.amazonaws.com/runtimes/{runtime_arn}/invocations",
-    version="1.0.0",
-    capabilities=AgentCapabilities(streaming=True),
-    skills=[
-        AgentSkill(id="correlate_finding", name="Correlate finding with CloudTrail"),
-        AgentSkill(id="timeline", name="Build event timeline for a resource"),
-        AgentSkill(id="blast_radius", name="Assess blast radius of a compromise"),
-    ],
+agent = create_agent(session_id="default", actor_id="default")
+
+server = A2AServer(
+    agent=agent,
+    http_url=RUNTIME_INVOCATIONS_URL,   # constructed from SSM at startup
+    enable_a2a_compliant_streaming=True,
 )
 
-app = A2AStarletteApplication(
-    agent_card=agent_card,
-    http_handler=DefaultRequestHandler(
-        agent_executor=InvestigationAgentExecutor(),
-        task_store=InMemoryTaskStore(),
-    ),
-)
+app = server.to_starlette_app()   # passed to uvicorn
 ```
 
-The `AgentExecutor` wraps the Strands agent and streams responses back via the A2A
-`TaskUpdater`:
+`A2AServer` wraps the Strands agent, generates the Agent Card at
+`/.well-known/agent.json`, and handles the A2A JSON-RPC 2.0 task lifecycle. We don't
+need to implement `AgentExecutor` — Strands handles that via `StrandsA2AExecutor`
+internally.
+
+**One circular dependency to solve.** The runtime's invocations URL contains the
+runtime ARN, which doesn't exist until after the runtime is deployed. We can't set it
+as a CDK environment variable. Instead, CDK stores the ARN in SSM, and `main.py`
+constructs the URL from SSM at startup:
 
 ```python
-class InvestigationAgentExecutor(AgentExecutor):
-    async def execute(self, context: RequestContext, event_queue: EventQueue):
-        updater = TaskUpdater(event_queue, context.task_id, context.context_id)
-        async for event in self.agent.stream(context.get_user_input()):
-            if event.get("data"):
-                await updater.add_artifact([TextPart(text=event["data"])])
-        await updater.complete()
+runtime_arn = get_ssm_parameter(f"/{stack_name}/investigation-agent-runtime-arn")
+RUNTIME_INVOCATIONS_URL = (
+    f"https://bedrock-agentcore.{region}.amazonaws.com/runtimes/{runtime_arn}/invocations"
+)
 ```
 
 ### How the orchestrator delegates
 
-The existing `agui-strands-agent` gains a `RemoteA2aAgent` for each sub-agent. A
-`LazyClientFactory` generates fresh httpx clients with M2M bearer tokens on each
-invocation — tokens are obtained via `requires_access_token()` against the Cognito
-machine client that already exists in the CDK stack:
+The orchestrator gains an `investigate_finding` Strands tool backed by `A2AAgent` from
+`strands.agent.a2a_agent`. The tool is created per-session with a fresh M2M token and
+the session ID for context propagation:
 
 ```python
 # patterns/agui-strands-agent/agent.py  (additions)
 
+from a2a.client import ClientConfig, ClientFactory
+from strands import tool
+from strands.agent.a2a_agent import A2AAgent
 from bedrock_agentcore.identity.auth import requires_access_token
-from a2a.client import A2AClient, ClientFactory
-from strands import Agent
-from strands.multiagent import RemoteA2aAgent
 
-class LazyClientFactory(ClientFactory):
-    @requires_access_token(provider_name=INVESTIGATION_AGENT_PROVIDER, auth_flow="M2M")
-    def get_client(self, url: str, token: str | None = None) -> A2AClient:
-        return A2AClient(
-            httpx_client=httpx.AsyncClient(
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": current_session_id(),
-                }
-            )
-        )
+def _make_investigation_tool(session_id: str):
+    investigation_agent_url = get_ssm_parameter(f"/{stack_name}/investigation-agent-url")
 
-investigation_agent = RemoteA2aAgent(
-    name="investigation_agent",
-    description="Deep incident investigation — correlates GuardDuty findings with CloudTrail and assesses blast radius",
-    agent_card_url=get_ssm_param(f"/{STACK_NAME}/investigation-agent-card-url"),
-    a2a_client_factory=LazyClientFactory(),
-)
+    @requires_access_token(provider_name=provider, auth_flow="M2M")
+    def _get_token(token: str = None):
+        return token
 
-root_agent = Agent(
-    model="us.anthropic.claude-sonnet-4-6-20251101-v1:0",
-    system_prompt=ORCHESTRATOR_PROMPT,
-    tools=[...existing_tools...],
-    sub_agents=[investigation_agent, playbook_agent, notification_agent],
-)
+    token = _get_token()
+    client_factory = ClientFactory(ClientConfig(
+        httpx_client=httpx.AsyncClient(
+            headers={
+                "Authorization": f"Bearer {token}",
+                "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": session_id,
+            },
+            timeout=120,
+        ),
+        streaming=True,
+    ))
+
+    remote_agent = A2AAgent(
+        endpoint=investigation_agent_url,
+        name="investigation_agent",
+        description="Deep incident investigation specialist",
+        a2a_client_factory=client_factory,
+    )
+
+    @tool
+    def investigate_finding(finding_id: str, account_id: str, region: str = "us-east-1") -> str:
+        """Perform a deep investigation of a GuardDuty finding.
+        Correlates with CloudTrail events, builds a timeline, and assesses blast radius.
+        Use this for thorough analysis instead of calling GuardDuty/CloudTrail tools directly."""
+        return remote_agent(
+            f"Investigate GuardDuty finding {finding_id} in account {account_id} region {region}."
+        ).message
+
+    return investigate_finding
 ```
 
-The orchestrator's system prompt instructs it to delegate full investigation tasks to
-`investigation_agent` rather than calling GuardDuty and CloudTrail tools directly. The
-direct tools remain available for quick lookups — "do we have any active findings?" goes
-through the tool directly; "investigate this finding and tell me the blast radius" gets
-delegated.
+The tool is added to the orchestrator's tool list alongside the gateway client. The
+function returns `None` gracefully if `investigation-agent-url` isn't in SSM yet —
+so the orchestrator continues to work during rollout before the investigation agent
+is deployed.
+
+The M2M token uses the same credential provider as the Gateway (`GATEWAY_CREDENTIAL_PROVIDER_NAME`).
+No new Cognito scopes are needed — the existing machine client can call both the Gateway
+and the investigation agent's runtime, since both are secured by the same Cognito user pool.
 
 ### CDK changes
 
-Each sub-agent runtime is a new CDK nested stack following the same pattern as the
-existing `BackendStack`:
+`InvestigationAgentStack` is a new CDK nested stack added to `FastMainStack`. It uses
+the same `AgentCoreRole` construct and the L2 `agentcore.Runtime` with `HTTP` protocol:
 
 ```typescript
 // infra-cdk/lib/investigation-agent-stack.ts
 
-new CfnAgentRuntime(this, "InvestigationAgentRuntime", {
-  agentRuntimeName: `${stackName}-investigation-agent`,
-  agentRuntimeArtifact: {
-    containerConfiguration: {
-      containerUri: investigationAgentImage.imageUri,
-    },
+const runtime = new agentcore.Runtime(this, "InvestigationAgentRuntime", {
+  runtimeName: `${props.stackName}_investigation_agent`,
+  agentRuntimeArtifact: agentcore.AgentRuntimeArtifact.fromAsset(repoRoot, {
+    platform: ecr_assets.Platform.LINUX_ARM64,
+    file: "patterns/investigation-agent/Dockerfile",
+  }),
+  executionRole: agentRole,
+  networkConfiguration: agentcore.RuntimeNetworkConfiguration.usingPublicNetwork(),
+  protocolConfiguration: agentcore.ProtocolType.HTTP,   // not AGUI
+  authorizerConfiguration: agentcore.RuntimeAuthorizerConfiguration.usingJWT(
+    cognitoDiscoveryUrl,
+    [props.machineClientId],  // accept tokens issued by orchestrator's machine client
+  ),
+  environmentVariables: {
+    STACK_NAME: props.stackName,
+    MEMORY_ID: props.memoryId,
+    GATEWAY_CREDENTIAL_PROVIDER_NAME: `${props.stackName}-runtime-gateway-auth`,
   },
-  roleArn: investigationAgentRole.roleArn,
-  networkConfiguration: { networkMode: "PUBLIC" },
-  protocolConfiguration: { serverProtocol: "HTTP" },
-});
+})
 
-// Agent card URL stored in SSM so orchestrator can discover it
-new ssm.StringParameter(this, "InvestigationAgentCardUrl", {
-  parameterName: `/${stackName}/investigation-agent-card-url`,
-  stringValue: `https://bedrock-agentcore.${region}.amazonaws.com/runtimes/${runtime.attrAgentRuntimeArn}/invocations`,
-});
+// Runtime ARN → SSM (for main.py URL construction at startup)
+new ssm.StringParameter(this, "InvestigationAgentRuntimeArnParam", {
+  parameterName: `/${props.stackName}/investigation-agent-runtime-arn`,
+  stringValue: runtime.agentRuntimeArn,
+})
+
+// Invocations URL → SSM (for orchestrator to discover)
+new ssm.StringParameter(this, "InvestigationAgentUrlParam", {
+  parameterName: `/${props.stackName}/investigation-agent-url`,
+  stringValue: `https://bedrock-agentcore.${region}.amazonaws.com/runtimes/${runtime.agentRuntimeArn}/invocations`,
+})
 ```
 
-The M2M auth requires a new Cognito scope for each sub-agent runtime. The machine
-client in `CognitoStack` gains one scope per sub-agent:
-
-```typescript
-// infra-cdk/lib/cognito-stack.ts (additions)
-
-const resourceServer = new cognito.UserPoolResourceServer(
-  this, "AgentResourceServer", {
-    userPool,
-    identifier: "agentsoar-agents",
-    scopes: [
-      { scopeName: "investigation", scopeDescription: "Invoke investigation agent" },
-      { scopeName: "playbook",      scopeDescription: "Invoke playbook agent" },
-      { scopeName: "notification",  scopeDescription: "Invoke notification agent" },
-    ],
-  }
-);
-```
+The investigation agent shares the existing memory resource — same `memoryId`, same
+two namespaces. Past incidents investigated by the investigation agent become retrievable
+context for future sessions, regardless of which agent made the call.
 
 ### Inter-agent context passing
 
-Each A2A message from the orchestrator includes the original incident context (finding
-ID, severity, affected resource) in the message body. The sub-agent's memory hooks pick
-up the `actor_id` from the request headers (`X-Amzn-Bedrock-AgentCore-Runtime-Custom-Actorid`)
-and use it to retrieve investigation notes from past incidents involving the same
-resource or finding type.
+The orchestrator passes the session ID in the `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id`
+header on every A2A call. This propagates the session context into the investigation
+agent's memory lookups — so if the same analyst is investigating related findings in a
+single session, the investigation agent's memory retrieval is scoped to their actor ID.
 
-This is the memory hooks paying off at the multi-agent level: the investigation agent
-not only searches its own conversation history, it searches across all past incidents
-for the same actor. The orchestrator doesn't need to pass historical context explicitly
-— the sub-agent retrieves it.
+The investigation agent's memory hooks pick up the same two namespaces
+(`/technical-issues/{actorId}` and `/knowledge/{actorId}`) as the orchestrator. Past
+investigation reports surface as `<soar-memory-context>` before the investigation agent
+processes each new finding — known-good baselines and confirmed false positives carry
+forward without explicit re-analysis.
 
 ## Design decisions
 
@@ -355,34 +352,38 @@ for the same actor. The orchestrator doesn't need to pass historical context exp
 AG-UI streaming connection and the Cognito user session. Making it the entry point
 means no changes to the frontend or to how sessions are established.
 
+**`A2AAgent` as a `@tool`, not a sub-agent.** Strands supports both patterns. Using
+`@tool` keeps the orchestrator's tool list uniform (gateway client, code interpreter,
+GitHub tools, investigation tool) and lets the agent use investigation as one step in a
+larger reasoning chain rather than a full delegation. The direct GuardDuty and CloudTrail
+tools remain available for quick lookups.
+
 **Sub-agents are Strands, not mixed frameworks.** The A2A sample uses Google ADK,
 Strands, and OpenAI — heterogeneous by design to demonstrate protocol interop. For
-AgentSOAR, Strands uniformity is more valuable than framework variety. All sub-agents
-use the same SDK, same tool pattern, same deployment model.
+AgentSOAR, Strands uniformity is more valuable than framework variety. All agents use
+the same SDK, same tool pattern, same deployment model.
 
-**GuardDuty and CloudTrail tools move to the investigation agent.** They currently live
-on the main agent via the Gateway. Moving them reduces the orchestrator's tool surface
-and scopes the cross-account IAM role to the investigation agent's execution role only.
+**GuardDuty and CloudTrail tools stay on the Gateway for now.** The investigation agent
+accesses them via the same Gateway MCP client as the orchestrator. Moving them
+exclusively to the investigation agent is a future cleanup once the A2A pattern is
+proven — doing it now adds migration risk with no benefit.
 
-**Tools stay in the Gateway.** The Gateway MCP pattern doesn't change. Sub-agents
-initialize their own `MCPClient` pointing at the same Gateway endpoint, scoped to the
-tools they need. The Gateway stays the single control plane for tool access and auditing.
-
-**A2A is additive.** The orchestrator with no active sub-agents behaves identically to
-the current single-agent setup. Sub-agents can be rolled out incrementally — deploy the
-investigation agent first, add it to the orchestrator's sub-agent list, verify, then
-add playbook and notification agents.
+**A2A is additive.** The orchestrator with no investigation agent URL in SSM behaves
+identically to the previous single-agent setup. The investigation agent can be deployed
+and validated independently before wiring it into the orchestrator.
 
 ## What's next
 
-- **Investigation agent first** — implement `patterns/investigation-agent/` with the
-  GuardDuty and CloudTrail tools, A2A server, and memory hooks. Wire it into the
-  orchestrator as the first RemoteA2aAgent.
 - **Playbook agent** — load account-specific runbooks from SSM and generate
   step-by-step containment instructions tailored to the affected resource type.
+  Same CDK pattern as `InvestigationAgentStack`.
 - **Notification agent** — the GitHub and Slack tools (already OAuth-connected) move
   here. The orchestrator delegates "file a GitHub issue for this incident" rather than
   calling GitHub tools directly.
+- **Per-request session isolation** — subclass `StrandsA2AExecutor` to extract
+  `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` and
+  `X-Amzn-Bedrock-AgentCore-Runtime-Custom-Actorid` from the A2A `RequestContext` and
+  pass them to `create_agent()` instead of using `"default"` for both.
 - **Parallel delegation** — once all three sub-agents exist, update the orchestrator
   prompt to run investigation and playbook lookup concurrently via A2A parallel
   streaming.
