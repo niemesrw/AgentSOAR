@@ -699,21 +699,6 @@ export class BackendStack extends cdk.NestedStack {
   }
 
   private createAgentCoreGateway(config: AppConfig): void {
-    // ---------------------------------------------------------------------------
-    // Cross-account role ARNs
-    //
-    // AgentSOAR Lambdas use a shared _get_client() helper that assumes an IAM
-    // role in another account when SECURITY_ACCOUNT_ROLE_ARN (or
-    // MANAGEMENT_ACCOUNT_ROLE_ARN, etc.) is set.  The roles must be created
-    // once in the target accounts and trust arn:aws:iam::<this.account>:root.
-    //
-    // To add cross-account access for a new Lambda:
-    //   1. Create the role in the target account (see docs/CROSS_ACCOUNT.md)
-    //   2. Pass its ARN as an environment variable below
-    //   3. Grant sts:AssumeRole on the ARN to the Lambda's execution role
-    // ---------------------------------------------------------------------------
-    const securityAccountRoleArn = `arn:aws:iam::429971481640:role/AgentSOARCrossAccountRole`
-
     // DynamoDB table for GuardDuty findings ingested via EventBridge.
     // Enables the agent to answer "what came in while I was away?" without
     // hitting the live GuardDuty API.  TTL auto-expires items after 30 days.
@@ -743,10 +728,6 @@ export class BackendStack extends cdk.NestedStack {
       code: lambda.Code.fromAsset(path.join(__dirname, "../../gateway/tools/guardduty_tool")), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
       timeout: cdk.Duration.seconds(60),
       environment: {
-        // Cross-account access: assume this role to query the Security account's
-        // GuardDuty detector (delegated admin holds all org-wide findings).
-        // Remove this env var to fall back to querying the local account's detector.
-        SECURITY_ACCOUNT_ROLE_ARN: securityAccountRoleArn,
         // DynamoDB findings store — populated by EventBridge ingestion
         FINDINGS_TABLE: findingsTable.tableName,
         // AgentCore Runtime ARN — used by _handle_eventbridge to trigger autonomous triage
@@ -759,16 +740,7 @@ export class BackendStack extends cdk.NestedStack {
       }),
     })
 
-    // Allow the Lambda to assume the cross-account role in the Security account
-    guarddutyLambda.addToRolePolicy(
-      new iam.PolicyStatement({
-        effect: iam.Effect.ALLOW,
-        actions: ["sts:AssumeRole"],
-        resources: [securityAccountRoleArn],
-      })
-    )
-
-    // GuardDuty read permissions on local account (fallback when no cross-account role)
+    // GuardDuty read permissions (Lambda runs in the Security account — direct access)
     guarddutyLambda.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
@@ -802,6 +774,45 @@ export class BackendStack extends cdk.NestedStack {
       })
     )
 
+    // Create CloudTrail tool Lambda
+    const cloudtrailLambda = new lambda.Function(this, "CloudTrailToolLambda", {
+      runtime: lambda.Runtime.PYTHON_3_13,
+      handler: "cloudtrail_lambda.handler",
+      code: lambda.Code.fromAsset(path.join(__dirname, "../../gateway/tools/cloudtrail_tool")), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+      timeout: cdk.Duration.seconds(60),
+      environment: {
+        // Role name assumed in remote accounts for cross-account CloudTrail queries
+        CROSS_ACCOUNT_ROLE_NAME: "AgentSOAR-CloudTrailReadRole",
+      },
+      logGroup: new logs.LogGroup(this, "CloudTrailToolLambdaLogGroup", {
+        logGroupName: `/aws/lambda/${config.stack_name_base}-cloudtrail-tool`,
+        retention: logs.RetentionDays.ONE_WEEK,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      }),
+    })
+
+    // CloudTrail read permissions (all three APIs are read-only / free-tier)
+    cloudtrailLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "cloudtrail:LookupEvents",
+          "cloudtrail:GetTrailStatus",
+          "cloudtrail:DescribeTrails",
+        ],
+        resources: ["*"],
+      })
+    )
+
+    // STS permission to assume cross-account roles for multi-account CloudTrail queries
+    cloudtrailLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["sts:AssumeRole"],
+        resources: ["arn:aws:iam::*:role/AgentSOAR-CloudTrailReadRole"],
+      })
+    )
+
     // Create sample tool Lambda
     const toolLambda = new lambda.Function(this, "SampleToolLambda", {
       runtime: lambda.Runtime.PYTHON_3_13,
@@ -824,6 +835,7 @@ export class BackendStack extends cdk.NestedStack {
     // Lambda invoke permissions
     toolLambda.grantInvoke(gatewayRole)
     guarddutyLambda.grantInvoke(gatewayRole)
+    cloudtrailLambda.grantInvoke(gatewayRole)
 
     // Bedrock permissions (region-agnostic)
     gatewayRole.addToPolicy(
@@ -1041,11 +1053,39 @@ export class BackendStack extends cdk.NestedStack {
       ],
     })
 
+    // Load CloudTrail tool specification
+    const cloudtrailToolSpecPath = path.join(__dirname, "../../gateway/tools/cloudtrail_tool/tool_spec.json") // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+    const cloudtrailApiSpec = JSON.parse(require("fs").readFileSync(cloudtrailToolSpecPath, "utf8"))
+
+    // Create Gateway Target for CloudTrail tools
+    const cloudtrailGatewayTarget = new bedrockagentcore.CfnGatewayTarget(this, "CloudTrailGatewayTarget", {
+      gatewayIdentifier: gateway.attrGatewayIdentifier,
+      name: "cloudtrail-tool-target",
+      description: "CloudTrail event investigation tools for incident triage",
+      targetConfiguration: {
+        mcp: {
+          lambda: {
+            lambdaArn: cloudtrailLambda.functionArn,
+            toolSchema: {
+              inlinePayload: cloudtrailApiSpec,
+            },
+          },
+        },
+      },
+      credentialProviderConfigurations: [
+        {
+          credentialProviderType: "GATEWAY_IAM_ROLE",
+        },
+      ],
+    })
+
     // Ensure proper creation order
     gatewayTarget.addDependency(gateway)
     guarddutyGatewayTarget.addDependency(gateway)
+    cloudtrailGatewayTarget.addDependency(gateway)
     gateway.node.addDependency(toolLambda)
     gateway.node.addDependency(guarddutyLambda)
+    gateway.node.addDependency(cloudtrailLambda)
     gateway.node.addDependency(this.machineClient)
     gateway.node.addDependency(gatewayRole)
 
