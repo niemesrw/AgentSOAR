@@ -2,13 +2,22 @@
 
 The investigation agent runs as an A2A-compliant HTTP server. AgentCore Runtime
 handles TLS termination and JWT auth — this process only sees authenticated requests.
+
+Path routing: AgentCore strips /runtimes/<arn> from the external URL before forwarding
+to the container, so the container receives POST /invocations. We register the A2A
+JSON-RPC handler at /invocations to match, mirroring how BedrockAgentCoreApp works.
 """
 
 import logging
 import os
 
 import uvicorn
+from a2a.server.apps import A2AStarletteApplication
 from agent import create_agent
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import PlainTextResponse
+from starlette.routing import Route
 from strands.multiagent.a2a import A2AServer
 from utils.ssm import get_ssm_parameter
 
@@ -36,13 +45,33 @@ logger.info("Investigation agent A2A URL: %s", RUNTIME_INVOCATIONS_URL)
 # and pass them to create_agent() for proper per-request isolation.
 agent = create_agent(session_id="default", actor_id="default")
 
+# Build the A2A server — http_url sets the URL advertised in the agent card.
 server = A2AServer(
     agent=agent,
     http_url=RUNTIME_INVOCATIONS_URL,
     enable_a2a_compliant_streaming=True,
 )
 
-app = server.to_starlette_app()
+# AgentCore strips /runtimes/<arn> before forwarding to the container, so requests
+# arrive at /invocations (not the full ARN path). Register the JSON-RPC handler there.
+# We build routes manually instead of using server.to_starlette_app() to avoid the
+# default path-based mounting which would register at the full ARN path incorrectly.
+a2a_routes = A2AStarletteApplication(
+    agent_card=server.public_agent_card,
+    http_handler=server.request_handler,
+).routes(rpc_url="/invocations")
+
+
+async def _ping(request: Request) -> PlainTextResponse:
+    return PlainTextResponse("pong")
+
+
+app = Starlette(
+    routes=[
+        Route("/ping", _ping, methods=["GET"]),
+        *a2a_routes,
+    ]
+)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)  # nosec B104 — container-only; AgentCore Runtime handles external TLS/auth
