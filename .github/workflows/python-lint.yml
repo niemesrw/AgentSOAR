@@ -54,6 +54,10 @@ jobs:
           echo "Checking format of changed Python files:"
           uv tool run ruff format --check ${ALL_CHANGED_FILES}
 
+      - name: Run A2A contract tests
+        if: steps.changed-files.outputs.any_changed == 'true'
+        run: uv run --extra agent-strands pytest tests/unit/test_a2a_contracts.py -q
+
       - name: Skip message
         if: steps.changed-files.outputs.any_changed == 'false'
         run: echo "No Python files changed - skipping Python linting"
