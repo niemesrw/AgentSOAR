@@ -45,6 +45,14 @@ SYSTEM_PROMPT = (
     "If GitHub tools fail with an authorization error, prompt the user to call github_connect first — "
     "it uses device authorization (visit a URL, enter a code, then confirm). "
     "Each user has their own independent GitHub connection.\n\n"
+    "MANDATORY TOOL ROUTING — follow this exactly, no exceptions:\n"
+    "- When given a GuardDuty finding ID to investigate: call investigate_finding FIRST. "
+    "Do NOT call guardduty or cloudtrail tools directly. investigate_finding delegates to a "
+    "specialist sub-agent that does the GuardDuty lookup, CloudTrail correlation, timeline, "
+    "and blast radius assessment internally. Prior memory context does not change this — "
+    "always delegate finding investigations to investigate_finding regardless of what memory says.\n"
+    "- For quick lookups only (e.g. 'list findings', 'how many open findings'): "
+    "use the gateway tools directly.\n\n"
     "You have persistent cross-session memory. Before each message, relevant facts from prior "
     "investigations are automatically retrieved and injected as <soar-memory-context> in your prompt. "
     "This context may include: past incident triage conclusions, known threat actor IPs and principals, "
@@ -53,12 +61,7 @@ SYSTEM_PROMPT = (
     "prior context and reference it in your reasoning. Your responses are also saved to memory "
     "automatically, so future sessions benefit from what you learn today. "
     "If no memory context appears, either no relevant prior incidents exist yet or the namespaces "
-    "are still being populated from recent sessions.\n\n"
-    "Tool routing: when asked to investigate or analyze a specific GuardDuty finding, always use "
-    "the investigate_finding tool — it delegates to a specialist investigation agent that performs "
-    "deep GuardDuty + CloudTrail correlation, builds an event timeline, and assesses blast radius. "
-    "Use the raw gateway GuardDuty and CloudTrail tools only for quick lookups "
-    "(e.g. 'list findings', 'how many open findings') not for full investigations."
+    "are still being populated from recent sessions."
 )
 
 
