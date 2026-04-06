@@ -128,8 +128,8 @@ def _make_investigation_tool(session_id: str):
         return None
 
     @requires_access_token(provider_name=provider, auth_flow="M2M", scopes=[])
-    def _get_token(token: str = None):
-        return token
+    def _get_token(access_token: str = None):
+        return access_token
 
     # Capture these in the closure; the actual token is fetched fresh per invocation
     # inside investigate_finding() to avoid stale-token failures after expiry.
