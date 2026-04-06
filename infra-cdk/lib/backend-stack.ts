@@ -781,8 +781,9 @@ export class BackendStack extends cdk.NestedStack {
       code: lambda.Code.fromAsset(path.join(__dirname, "../../gateway/tools/cloudtrail_tool")), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
       timeout: cdk.Duration.seconds(60),
       environment: {
-        // Role name assumed in remote accounts for cross-account CloudTrail queries
-        CROSS_ACCOUNT_ROLE_NAME: "AgentSOAR-CloudTrailReadRole",
+        // Centralized CloudTrail S3 bucket (org trail in management account)
+        CLOUDTRAIL_LOGS_BUCKET: "cloudtrail-logs-982682372189-us-east-1",
+        CLOUDTRAIL_LOGS_REGION: "us-east-1",
       },
       logGroup: new logs.LogGroup(this, "CloudTrailToolLambdaLogGroup", {
         logGroupName: `/aws/lambda/${config.stack_name_base}-cloudtrail-tool`,
@@ -791,7 +792,7 @@ export class BackendStack extends cdk.NestedStack {
       }),
     })
 
-    // CloudTrail read permissions (all three APIs are read-only / free-tier)
+    // CloudTrail API permissions (LookupEvents fallback for trailing ~20-min window)
     cloudtrailLambda.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
@@ -804,12 +805,15 @@ export class BackendStack extends cdk.NestedStack {
       })
     )
 
-    // STS permission to assume cross-account roles for multi-account CloudTrail queries
+    // S3 read access to the centralized CloudTrail logs bucket (management account)
     cloudtrailLambda.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
-        actions: ["sts:AssumeRole"],
-        resources: ["arn:aws:iam::*:role/AgentSOAR-CloudTrailReadRole"],
+        actions: ["s3:GetObject", "s3:ListBucket"],
+        resources: [
+          "arn:aws:s3:::cloudtrail-logs-982682372189-us-east-1",
+          "arn:aws:s3:::cloudtrail-logs-982682372189-us-east-1/*",
+        ],
       })
     )
 

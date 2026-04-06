@@ -1,10 +1,13 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import gzip
+import io
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import boto3
@@ -13,56 +16,298 @@ from botocore.exceptions import ClientError
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+# CloudTrail S3 delivery lag — events older than this are reliably in S3.
+# Events newer than this fall back to LookupEvents in the current account.
+_S3_LAG_MINUTES = 20
+
+# Maximum files to download per query to avoid Lambda timeouts
+_MAX_S3_FILES = 50
+
 
 # ---------------------------------------------------------------------------
-# Cross-account client helper (same pattern as guardduty_lambda.py)
+# S3-based centralized query (primary path)
 # ---------------------------------------------------------------------------
 
 
-def _get_client(service: str, region: str, role_arn: str | None = None) -> Any:
-    """
-    Return a boto3 client for *service*, optionally via cross-account role assumption.
+def _s3_client() -> Any:
+    return boto3.client("s3")
 
-    When role_arn is provided the Lambda assumes that role via STS and returns a
-    client scoped to those temporary credentials.  When absent, the Lambda's own
-    execution credentials are used (same-account or local testing).
-    """
-    if role_arn:
-        sts = boto3.client("sts")
-        resp = sts.assume_role(
-            RoleArn=role_arn,
-            RoleSessionName="agentsoar-cloudtrail",
-            ExternalId="agentsoar",
-            DurationSeconds=900,
+
+def _list_account_prefixes(bucket: str) -> list[str]:
+    """Return all account IDs present under AWSLogs/ in the centralized bucket."""
+    s3 = _s3_client()
+    result = s3.list_objects_v2(Bucket=bucket, Prefix="AWSLogs/", Delimiter="/")
+    prefixes = result.get("CommonPrefixes", [])
+    accounts = []
+    for p in prefixes:
+        # prefix looks like "AWSLogs/123456789012/"
+        parts = p["Prefix"].rstrip("/").split("/")
+        if len(parts) == 2:
+            accounts.append(parts[1])
+    return accounts
+
+
+def _s3_key_prefix(account_id: str, region: str, dt: datetime) -> str:
+    return (
+        f"AWSLogs/{account_id}/CloudTrail/{region}/"
+        f"{dt.year:04d}/{dt.month:02d}/{dt.day:02d}/"
+    )
+
+
+def _list_keys_for_window(
+    bucket: str,
+    account_ids: list[str],
+    regions: list[str],
+    start_dt: datetime,
+    end_dt: datetime,
+) -> list[str]:
+    """List all S3 keys that could contain events in the given window."""
+    s3 = _s3_client()
+    keys: list[str] = []
+
+    # Enumerate every (account, region, date) combination in the window
+    current = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    dates: list[datetime] = []
+    while current <= end_dt:
+        dates.append(current)
+        current += timedelta(days=1)
+
+    for account_id in account_ids:
+        for region in regions:
+            for dt in dates:
+                prefix = _s3_key_prefix(account_id, region, dt)
+                paginator = s3.get_paginator("list_objects_v2")
+                for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                    for obj in page.get("Contents", []):
+                        keys.append(obj["Key"])
+                        if len(keys) >= _MAX_S3_FILES:
+                            logger.warning(
+                                "Reached %d file limit; results may be truncated",
+                                _MAX_S3_FILES,
+                            )
+                            return keys
+    return keys
+
+
+def _parse_s3_file(bucket: str, key: str) -> list[dict[str, Any]]:
+    """Download and parse a single gzipped CloudTrail log file."""
+    s3 = _s3_client()
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        compressed = obj["Body"].read()
+        with gzip.open(io.BytesIO(compressed), "rt", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("Records", [])
+    except Exception as exc:
+        logger.warning("Failed to parse %s: %s", key, exc)
+        return []
+
+
+def _event_matches(
+    record: dict[str, Any],
+    start_dt: datetime,
+    end_dt: datetime,
+    event_name: str | None,
+    username: str | None,
+    resource_type: str | None,
+    resource_name: str | None,
+    access_key_id: str | None,
+    read_only: str | None,
+) -> bool:
+    """Return True if a CloudTrail record matches all active filters."""
+    # Time filter
+    event_time_str = record.get("eventTime", "")
+    try:
+        event_time = datetime.fromisoformat(event_time_str.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if not (start_dt <= event_time <= end_dt):
+        return False
+
+    if event_name and record.get("eventName") != event_name:
+        return False
+
+    if username:
+        identity = record.get("userIdentity", {})
+        record_user = (
+            identity.get("userName")
+            or identity.get("sessionContext", {})
+            .get("sessionIssuer", {})
+            .get("userName")
+            or identity.get("type", "")
         )
-        creds = resp["Credentials"]
-        session = boto3.Session(
-            aws_access_key_id=creds["AccessKeyId"],
-            aws_secret_access_key=creds["SecretAccessKey"],
-            aws_session_token=creds["SessionToken"],
-        )
-        return session.client(service, region_name=region)
-    return boto3.client(service, region_name=region)
+        if username.lower() not in record_user.lower():
+            return False
+
+    if access_key_id:
+        identity = record.get("userIdentity", {})
+        if identity.get("accessKeyId") != access_key_id:
+            return False
+
+    if read_only is not None:
+        expected = read_only.lower() == "true"
+        if record.get("readOnly") != expected:
+            return False
+
+    if resource_type or resource_name:
+        resources = record.get("resources", [])
+        if not resources:
+            return False
+        match = False
+        for r in resources:
+            type_ok = (
+                not resource_type or resource_type.lower() in r.get("type", "").lower()
+            )
+            name_ok = (
+                not resource_name or resource_name.lower() in r.get("ARN", "").lower()
+            )
+            if type_ok and name_ok:
+                match = True
+                break
+        if not match:
+            return False
+
+    return True
 
 
-def _cloudtrail_client(region: str, account_id: str | None = None) -> Any:
+def _format_record(record: dict[str, Any]) -> str:
+    """Format a single CloudTrail record as a readable line."""
+    event_time = record.get("eventTime", "?")
+    event_name = record.get("eventName", "?")
+    source = record.get("eventSource", "?")
+    region = record.get("awsRegion", "?")
+    account = record.get(
+        "recipientAccountId", record.get("userIdentity", {}).get("accountId", "?")
+    )
+    identity = record.get("userIdentity", {})
+    username = (
+        identity.get("userName")
+        or identity.get("sessionContext", {}).get("sessionIssuer", {}).get("userName")
+        or identity.get("type", "?")
+    )
+    access_key = identity.get("accessKeyId", "")
+    event_id = record.get("eventID", "?")
+    resources = record.get("resources", [])
+    resource_strs = [
+        f"{r.get('type', '?')}:{r.get('ARN', '?').split(':')[-1]}"
+        for r in resources[:2]
+    ]
+    resource_text = ", ".join(resource_strs) if resource_strs else "—"
+    key_text = f" key={access_key}" if access_key else ""
+    return (
+        f"  {event_time}  {event_name:<35} user={username:<25} acct={account} region={region}\n"
+        f"    src={source}{key_text}  event_id={event_id}  resources=[{resource_text}]"
+    )
+
+
+def _query_s3(
+    bucket: str,
+    account_ids: list[str],
+    regions: list[str],
+    start_dt: datetime,
+    end_dt: datetime,
+    max_results: int,
+    **filters: Any,
+) -> list[dict[str, Any]]:
+    """Fetch and filter CloudTrail records from the centralized S3 bucket."""
+    keys = _list_keys_for_window(bucket, account_ids, regions, start_dt, end_dt)
+    if not keys:
+        return []
+
+    all_records: list[dict[str, Any]] = []
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(_parse_s3_file, bucket, key): key for key in keys}
+        for future in as_completed(futures):
+            records = future.result()
+            for record in records:
+                if _event_matches(record, start_dt, end_dt, **filters):
+                    all_records.append(record)
+                    if len(all_records) >= max_results * 3:
+                        # Over-fetch so we can sort and trim
+                        break
+
+    # Sort descending by event time, return top N
+    all_records.sort(key=lambda r: r.get("eventTime", ""), reverse=True)
+    return all_records[:max_results]
+
+
+# ---------------------------------------------------------------------------
+# LookupEvents fallback for the trailing ~20-minute window
+# ---------------------------------------------------------------------------
+
+
+def _query_recent_lookupevents(
+    region: str,
+    start_dt: datetime,
+    end_dt: datetime,
+    max_results: int,
+    event_name: str | None,
+    username: str | None,
+    access_key_id: str | None,
+    read_only: str | None,
+) -> list[dict[str, Any]]:
     """
-    Return a CloudTrail client, assuming a cross-account role when account_id
-    differs from the Lambda's own account.
-
-    Cross-account role ARN is built from CROSS_ACCOUNT_ROLE_NAME env var
-    (default: AgentSOAR-CloudTrailReadRole) and the requested account_id.
-    Falls back to Lambda execution credentials when no account_id is given or
-    the account matches the Lambda's own account.
+    Query LookupEvents in the current account for events not yet in S3.
+    Returns normalised dicts compatible with _format_record.
     """
-    own_account = boto3.client("sts").get_caller_identity()["Account"]
-    if account_id and account_id != own_account:
-        role_name = os.environ.get(
-            "CROSS_ACCOUNT_ROLE_NAME", "AgentSOAR-CloudTrailReadRole"
+    client = boto3.client("cloudtrail", region_name=region)
+    lookup_attrs: list[dict[str, str]] = []
+    if event_name:
+        lookup_attrs.append({"AttributeKey": "EventName", "AttributeValue": event_name})
+    if username:
+        lookup_attrs.append({"AttributeKey": "Username", "AttributeValue": username})
+    if access_key_id:
+        lookup_attrs.append(
+            {"AttributeKey": "AccessKeyId", "AttributeValue": access_key_id}
         )
-        role_arn = f"arn:aws:iam::{account_id}:role/{role_name}"
-        return _get_client("cloudtrail", region, role_arn=role_arn)
-    return _get_client("cloudtrail", region)
+    if read_only:
+        lookup_attrs.append(
+            {"AttributeKey": "ReadOnly", "AttributeValue": read_only.lower()}
+        )
+
+    kwargs: dict[str, Any] = {
+        "StartTime": start_dt,
+        "EndTime": end_dt,
+        "MaxResults": max_results,
+    }
+    if lookup_attrs:
+        kwargs["LookupAttributes"] = lookup_attrs
+
+    try:
+        resp = client.lookup_events(**kwargs)
+    except ClientError as exc:
+        logger.warning("LookupEvents fallback failed: %s", exc)
+        return []
+
+    records = []
+    for ev in resp.get("Events", []):
+        # Normalise LookupEvents response to CloudTrail record format
+        ct_event = {}
+        if ev.get("CloudTrailEvent"):
+            try:
+                ct_event = json.loads(ev["CloudTrailEvent"])
+            except Exception:
+                pass
+        if not ct_event:
+            ct_event = {
+                "eventTime": ev.get("EventTime", "").isoformat()
+                if hasattr(ev.get("EventTime"), "isoformat")
+                else str(ev.get("EventTime", "")),
+                "eventName": ev.get("EventName", "?"),
+                "eventSource": ev.get("EventSource", "?"),
+                "eventID": ev.get("EventId", "?"),
+                "userIdentity": {"userName": ev.get("Username", "?")},
+                "resources": [
+                    {
+                        "ARN": r.get("ResourceName", ""),
+                        "type": r.get("ResourceType", ""),
+                    }
+                    for r in ev.get("Resources", [])
+                ],
+            }
+        records.append(ct_event)
+    return records
 
 
 # ---------------------------------------------------------------------------
@@ -84,114 +329,125 @@ def lookup_cloudtrail_events(
     max_results: int = 20,
 ) -> str:
     """
-    Query CloudTrail management events using the LookupEvents API.
+    Query CloudTrail management events across all org accounts.
 
-    Covers the last 90 days of management events at no cost.  One or more
-    attribute filters may be combined (all filters are ANDed).
+    Primary path: reads from the centralized S3 bucket (all accounts, unlimited history).
+    Fallback: uses LookupEvents for events in the last ~20 minutes not yet delivered to S3
+    (current account only).
 
     Args:
-        start_time:    ISO-8601 UTC start (e.g. "2026-04-01T00:00:00Z"). Defaults to 24 h ago.
-        end_time:      ISO-8601 UTC end.  Defaults to now.
-        event_name:    CloudTrail event/API name to filter on (e.g. "DescribeStacks", "AssumeRole").
-        username:      IAM user, role session name, or "Root" to filter by caller.
-        resource_type: AWS resource type (e.g. "AWS::S3::Bucket", "AWS::IAM::Role").
-        resource_name: Resource ARN or name to filter on.
-        access_key_id: Access key ID used to make the API call.
-        read_only:     "true" or "false" — filter to read-only or write events.
-        account_id:    AWS account ID to query.  Defaults to the Lambda's account.
-        region:        AWS region to query.  Defaults to Lambda execution region.
-        max_results:   Number of events to return (1-50, default 20).
+        start_time:    ISO-8601 UTC (e.g. "2026-04-01T00:00:00Z"). Defaults to 24 h ago.
+        end_time:      ISO-8601 UTC. Defaults to now.
+        event_name:    API name to filter on (e.g. "DescribeStacks", "AssumeRole").
+        username:      IAM username, role session name, or "Root".
+        resource_type: AWS resource type (e.g. "AWS::S3::Bucket").
+        resource_name: Resource ARN or name substring.
+        access_key_id: Access key ID (AKIA... or ASIA...).
+        read_only:     "true" or "false".
+        account_id:    Specific account to query; omit to search all org accounts.
+        region:        AWS region to query. Defaults to Lambda execution region.
+        max_results:   Events to return (1-50, default 20).
     """
     region = region or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
     max_results = max(1, min(50, max_results))
+    bucket = os.environ.get("CLOUDTRAIL_LOGS_BUCKET", "")
 
-    # Parse time range
     now = datetime.now(timezone.utc)
-    if end_time:
-        end_dt = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+    end_dt = (
+        datetime.fromisoformat(end_time.replace("Z", "+00:00")) if end_time else now
+    )
+    start_dt = (
+        datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+        if start_time
+        else end_dt - timedelta(hours=24)
+    )
+
+    # Determine which accounts and regions to scan
+    if account_id:
+        account_ids = [account_id]
+    elif bucket:
+        try:
+            account_ids = _list_account_prefixes(bucket)
+        except Exception as exc:
+            logger.warning("Could not list account prefixes: %s", exc)
+            account_ids = []
     else:
-        end_dt = now
-    if start_time:
-        start_dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
-    else:
-        # Default: 24 hours before end_time
-        from datetime import timedelta
+        account_ids = []
 
-        start_dt = end_dt - timedelta(hours=24)
+    regions = [region]
+    filters = dict(
+        event_name=event_name,
+        username=username,
+        resource_type=resource_type,
+        resource_name=resource_name,
+        access_key_id=access_key_id,
+        read_only=read_only,
+    )
 
-    # Build LookupAttributes — CloudTrail ANDs multiple attributes
-    lookup_attrs: list[dict[str, str]] = []
-    if event_name:
-        lookup_attrs.append({"AttributeKey": "EventName", "AttributeValue": event_name})
-    if username:
-        lookup_attrs.append({"AttributeKey": "Username", "AttributeValue": username})
-    if resource_type:
-        lookup_attrs.append(
-            {"AttributeKey": "ResourceType", "AttributeValue": resource_type}
+    all_records: list[dict[str, Any]] = []
+    sources: list[str] = []
+
+    # --- S3 path: events older than the delivery lag ---
+    s3_end = min(end_dt, now - timedelta(minutes=_S3_LAG_MINUTES))
+    if bucket and account_ids and start_dt < s3_end:
+        try:
+            s3_records = _query_s3(
+                bucket, account_ids, regions, start_dt, s3_end, max_results, **filters
+            )
+            all_records.extend(s3_records)
+            sources.append(
+                f"S3 ({len(s3_records)} events from {len(account_ids)} account(s))"
+            )
+        except Exception as exc:
+            logger.error("S3 query failed: %s", exc)
+            sources.append(f"S3 (error: {exc})")
+    elif not bucket:
+        sources.append("S3 (CLOUDTRAIL_LOGS_BUCKET not configured)")
+
+    # --- LookupEvents fallback: trailing window not yet in S3 ---
+    recent_start = max(start_dt, now - timedelta(minutes=_S3_LAG_MINUTES))
+    if recent_start < end_dt:
+        recent_records = _query_recent_lookupevents(
+            region,
+            recent_start,
+            end_dt,
+            max_results,
+            event_name,
+            username,
+            access_key_id,
+            read_only,
         )
-    if resource_name:
-        lookup_attrs.append(
-            {"AttributeKey": "ResourceName", "AttributeValue": resource_name}
-        )
-    if access_key_id:
-        lookup_attrs.append(
-            {"AttributeKey": "AccessKeyId", "AttributeValue": access_key_id}
-        )
-    if read_only:
-        lookup_attrs.append(
-            {"AttributeKey": "ReadOnly", "AttributeValue": read_only.lower()}
-        )
-
-    client = _cloudtrail_client(region, account_id)
-
-    kwargs: dict[str, Any] = {
-        "StartTime": start_dt,
-        "EndTime": end_dt,
-        "MaxResults": max_results,
-    }
-    if lookup_attrs:
-        kwargs["LookupAttributes"] = lookup_attrs
-
-    try:
-        resp = client.lookup_events(**kwargs)
-    except ClientError as exc:
-        return f"Error querying CloudTrail: {exc.response['Error']['Message']}"
-
-    events = resp.get("Events", [])
-    if not events:
-        filter_desc = _describe_filters(
-            event_name, username, resource_type, resource_name, access_key_id, read_only
-        )
-        return (
-            f"No CloudTrail events found in {account_id or 'current account'} / {region} "
-            f"between {start_dt.isoformat()} and {end_dt.isoformat()}"
-            + (f" with filters: {filter_desc}" if filter_desc else ".")
-        )
-
-    target = account_id or "current account"
-    lines = [
-        f"CloudTrail events in {target} / {region} "
-        f"({start_dt.strftime('%Y-%m-%dT%H:%MZ')} → {end_dt.strftime('%Y-%m-%dT%H:%MZ')}): "
-        f"{len(events)} result(s)\n"
-    ]
-    for ev in events:
-        event_time = ev.get("EventTime", "")
-        if hasattr(event_time, "isoformat"):
-            event_time = event_time.strftime("%Y-%m-%dT%H:%M:%SZ")
-        name = ev.get("EventName", "?")
-        user = ev.get("Username", "?")
-        source = ev.get("EventSource", "?")
-        event_id = ev.get("EventId", "?")
-        resources = ev.get("Resources", [])
-        resource_strs = [
-            f"{r.get('ResourceType', '?')}:{r.get('ResourceName', '?')}"
-            for r in resources[:3]
+        # Deduplicate by eventID
+        existing_ids = {r.get("eventID") for r in all_records}
+        new_records = [
+            r for r in recent_records if r.get("eventID") not in existing_ids
         ]
-        resource_text = ", ".join(resource_strs) if resource_strs else "—"
-        lines.append(
-            f"  {event_time}  {name:<35} user={user:<25} src={source}\n"
-            f"    event_id={event_id}  resources=[{resource_text}]"
+        all_records.extend(new_records)
+        sources.append(
+            f"LookupEvents last {_S3_LAG_MINUTES}m ({len(new_records)} event(s), current account only)"
         )
+
+    if not all_records:
+        target = account_id or "all org accounts"
+        return (
+            f"No CloudTrail events found in {target} / {region} "
+            f"between {start_dt.strftime('%Y-%m-%dT%H:%MZ')} and {end_dt.strftime('%Y-%m-%dT%H:%MZ')}.\n"
+            f"Sources checked: {', '.join(sources)}"
+        )
+
+    all_records.sort(key=lambda r: r.get("eventTime", ""), reverse=True)
+    all_records = all_records[:max_results]
+
+    target = account_id or "all org accounts"
+    lines = [
+        f"CloudTrail events — {target} / {region} "
+        f"({start_dt.strftime('%Y-%m-%dT%H:%MZ')} → {end_dt.strftime('%Y-%m-%dT%H:%MZ')}): "
+        f"{len(all_records)} result(s)",
+        f"Sources: {', '.join(sources)}",
+        "",
+    ]
+    for record in all_records:
+        lines.append(_format_record(record))
 
     return "\n".join(lines)
 
@@ -204,43 +460,42 @@ def get_trail_status(
     """
     Return the logging status and health of a CloudTrail trail.
 
-    Args:
-        trail_name: Trail name or ARN.  Defaults to "management-trail".
-        account_id: AWS account ID where the trail lives.  Defaults to Lambda's account.
-        region:     AWS region.  Defaults to Lambda execution region.
+    The org-wide trail is visible from any member account via shadow trails.
+    No cross-account role assumption required.
     """
     region = region or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-    client = _cloudtrail_client(region, account_id)
+    client = boto3.client("cloudtrail", region_name=region)
+
+    # For org trails, the ARN includes the management account ID
+    name = trail_name
+    if account_id and not trail_name.startswith("arn:"):
+        name = f"arn:aws:cloudtrail:{region}:{account_id}:trail/{trail_name}"
 
     try:
-        status = client.get_trail_status(Name=trail_name)
+        status = client.get_trail_status(Name=name)
     except ClientError as exc:
         return f"Error getting trail status for '{trail_name}': {exc.response['Error']['Message']}"
 
     is_logging = status.get("IsLogging", False)
     latest_delivery = status.get("LatestDeliveryTime", "never")
     latest_digest = status.get("LatestDigestDeliveryTime", "never")
-    delivery_error = status.get("LatestDeliveryError", "none")
-    latest_error = (
-        status.get("LatestNotificationError")
-        or status.get("LatestDeliveryError")
-        or "none"
-    )
+    delivery_error = status.get("LatestDeliveryError") or "none"
 
-    if hasattr(latest_delivery, "isoformat"):
+    if hasattr(latest_delivery, "strftime"):
         latest_delivery = latest_delivery.strftime("%Y-%m-%dT%H:%M:%SZ")
-    if hasattr(latest_digest, "isoformat"):
+    if hasattr(latest_digest, "strftime"):
         latest_digest = latest_digest.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     health = "HEALTHY" if is_logging and delivery_error == "none" else "DEGRADED"
-    lines = [
-        f"Trail: {trail_name}",
-        f"  Status         : {'LOGGING' if is_logging else 'NOT LOGGING'} ({health})",
-        f"  Latest delivery: {latest_delivery}",
-        f"  Latest digest  : {latest_digest}",
-        f"  Last error     : {latest_error}",
-    ]
-    return "\n".join(lines)
+    return "\n".join(
+        [
+            f"Trail: {trail_name}",
+            f"  Status         : {'LOGGING' if is_logging else 'NOT LOGGING'} ({health})",
+            f"  Latest delivery: {latest_delivery}",
+            f"  Latest digest  : {latest_digest}",
+            f"  Last error     : {delivery_error}",
+        ]
+    )
 
 
 def list_trails(
@@ -248,14 +503,10 @@ def list_trails(
     region: str | None = None,
 ) -> str:
     """
-    List all CloudTrail trails visible from the given account and region.
-
-    Args:
-        account_id: AWS account ID to query.  Defaults to Lambda's account.
-        region:     AWS region.  Defaults to Lambda execution region.
+    List all CloudTrail trails visible from the current account, including org shadow trails.
     """
     region = region or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-    client = _cloudtrail_client(region, account_id)
+    client = boto3.client("cloudtrail", region_name=region)
 
     try:
         resp = client.describe_trails(includeShadowTrails=True)
@@ -264,8 +515,7 @@ def list_trails(
 
     trails = resp.get("trailList", [])
     if not trails:
-        target = account_id or "current account"
-        return f"No CloudTrail trails found in {target} / {region}."
+        return f"No CloudTrail trails found in {region}."
 
     lines = [f"CloudTrail trails ({len(trails)}):\n"]
     for t in trails:
@@ -284,30 +534,6 @@ def list_trails(
     return "\n".join(lines)
 
 
-def _describe_filters(
-    event_name: str | None,
-    username: str | None,
-    resource_type: str | None,
-    resource_name: str | None,
-    access_key_id: str | None,
-    read_only: str | None,
-) -> str:
-    parts = []
-    if event_name:
-        parts.append(f"event_name={event_name}")
-    if username:
-        parts.append(f"username={username}")
-    if resource_type:
-        parts.append(f"resource_type={resource_type}")
-    if resource_name:
-        parts.append(f"resource_name={resource_name}")
-    if access_key_id:
-        parts.append(f"access_key_id={access_key_id}")
-    if read_only:
-        parts.append(f"read_only={read_only}")
-    return ", ".join(parts)
-
-
 # ---------------------------------------------------------------------------
 # Lambda handler
 # ---------------------------------------------------------------------------
@@ -324,13 +550,9 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     CloudTrail tools Lambda handler for AgentSOAR AgentCore Gateway.
 
     Implements three read-only tools:
-    - lookup_cloudtrail_events  (free LookupEvents API, 90-day history)
+    - lookup_cloudtrail_events  (S3-based, all org accounts; LookupEvents fallback for last 20 min)
     - get_trail_status
     - list_trails
-
-    Gateway input format:
-        event: tool arguments passed directly from the AgentCore Gateway
-        context.client_context.custom['bedrockAgentCoreToolName']: full tool name with target prefix
     """
     logger.info("Received event: %s", json.dumps(event, default=str))
 
