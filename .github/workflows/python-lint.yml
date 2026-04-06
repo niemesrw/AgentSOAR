@@ -56,7 +56,7 @@ jobs:
 
       - name: Run A2A contract tests
         if: steps.changed-files.outputs.any_changed == 'true'
-        run: uv run --extra agent-strands pytest tests/unit/test_a2a_contracts.py -q
+        run: uv run --extra agent-strands --extra dev pytest tests/unit/test_a2a_contracts.py -q
 
       - name: Skip message
         if: steps.changed-files.outputs.any_changed == 'false'
