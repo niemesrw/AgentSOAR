@@ -336,15 +336,17 @@ context for future sessions, regardless of which agent made the call.
 ### Inter-agent context passing
 
 The orchestrator passes the session ID in the `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id`
-header on every A2A call. This propagates the session context into the investigation
-agent's memory lookups — so if the same analyst is investigating related findings in a
-single session, the investigation agent's memory retrieval is scoped to their actor ID.
+header on every A2A call. In the current implementation the investigation agent uses
+`session_id="default"` and `actor_id="default"` for all requests — a known MVP
+limitation. The memory namespaces (`/technical-issues/{actorId}` and
+`/knowledge/{actorId}`) are therefore shared across all callers at this stage.
 
-The investigation agent's memory hooks pick up the same two namespaces
-(`/technical-issues/{actorId}` and `/knowledge/{actorId}`) as the orchestrator. Past
-investigation reports surface as `<soar-memory-context>` before the investigation agent
-processes each new finding — known-good baselines and confirmed false positives carry
-forward without explicit re-analysis.
+The investigation agent's memory hooks are wired with the same retrieval config as the
+orchestrator, so past investigation reports do surface as `<soar-memory-context>` —
+known-good baselines and confirmed false positives carry forward. Actor-scoped isolation
+(each analyst getting their own memory slice) requires subclassing `StrandsA2AExecutor`
+to extract `X-Amzn-Bedrock-AgentCore-Runtime-Custom-Actorid` from the request context
+and pass it to `create_agent()`. That's tracked in the "What's next" section below.
 
 ## Design decisions
 

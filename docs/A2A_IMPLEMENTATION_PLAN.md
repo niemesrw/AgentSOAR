@@ -42,7 +42,7 @@ infra-cdk/lib/cognito-stack.ts                # where to add new Cognito scope
 
 ## Key library facts (already verified in Docker image)
 
-Strands 1.16.0 has native A2A support — no extra packages needed beyond `a2a-sdk`.
+Native A2A support is in Strands 1.x — this repo uses `strands-agents==1.32.0` and `bedrock-agentcore==1.4.7`. Keep any local pins aligned with `patterns/agui-strands-agent/requirements.txt`.
 
 **Sub-agent server side** (`strands.multiagent.a2a`):
 ```python
@@ -223,14 +223,15 @@ Change the CMD to `uvicorn main:app --host 0.0.0.0 --port 8080`.
 ### 4. `patterns/investigation-agent/requirements.txt`
 
 ```
-strands-agents==1.16.0
-bedrock-agentcore[strands-agents]==1.0.6
+strands-agents==1.32.0
+bedrock-agentcore==1.4.7
 a2a-sdk==0.3.24
 uvicorn>=0.30.0
-mcp==1.21.0
+mcp==1.26.0
+PyJWT[crypto]==2.12.1
 ```
 
-Same versions as the main agent. Check `uv.lock` for exact pins.
+Match versions in `patterns/agui-strands-agent/requirements.txt` exactly.
 
 ---
 
