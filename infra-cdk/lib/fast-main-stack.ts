@@ -6,6 +6,7 @@ import { AppConfig } from "./utils/config-manager"
 import { BackendStack } from "./backend-stack"
 import { AmplifyHostingStack } from "./amplify-hosting-stack"
 import { CognitoStack } from "./cognito-stack"
+import { InvestigationAgentStack } from "./investigation-agent-stack"
 
 export interface FastAmplifyStackProps extends cdk.StackProps {
   config: AppConfig
@@ -15,6 +16,7 @@ export class FastMainStack extends cdk.Stack {
   public readonly amplifyHostingStack: AmplifyHostingStack
   public readonly backendStack: BackendStack
   public readonly cognitoStack: CognitoStack
+  public readonly investigationAgentStack: InvestigationAgentStack
 
   constructor(scope: Construct, id: string, props: FastAmplifyStackProps) {
     const description =
@@ -38,6 +40,17 @@ export class FastMainStack extends cdk.Stack {
       userPoolClientId: this.cognitoStack.userPoolClientId,
       userPoolDomain: this.cognitoStack.userPoolDomain,
       frontendUrl: this.amplifyHostingStack.amplifyUrl,
+    })
+
+    // Step 3: Create investigation agent stack — a separate A2A runtime that the
+    // orchestrator delegates deep incident analysis to.
+    // Shares the same Cognito user pool, machine client, and memory resource.
+    this.investigationAgentStack = new InvestigationAgentStack(this, `${id}-investigation-agent`, {
+      stackName: props.config.stack_name_base,
+      memoryId: this.backendStack.memoryId,
+      memoryArn: this.backendStack.memoryArn,
+      userPoolId: this.cognitoStack.userPoolId,
+      machineClientId: this.backendStack.machineClientId,
     })
 
     // Outputs
@@ -81,6 +94,12 @@ export class FastMainStack extends cdk.Stack {
       value: this.backendStack.feedbackApiUrl,
       description: "Feedback API Gateway URL",
       exportName: `${props.config.stack_name_base}-FeedbackApiUrl`,
+    })
+
+    new cdk.CfnOutput(this, "InvestigationAgentUrl", {
+      value: this.investigationAgentStack.invocationsUrl,
+      description: "Investigation agent A2A invocations URL",
+      exportName: `${props.config.stack_name_base}-InvestigationAgentUrl`,
     })
 
     new cdk.CfnOutput(this, "AmplifyConsoleUrl", {

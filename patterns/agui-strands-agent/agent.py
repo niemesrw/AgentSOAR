@@ -7,8 +7,11 @@ AgentCore proxies these unchanged when deployed with --protocol AGUI.
 import logging
 import os
 
+import httpx
+from a2a.client import ClientConfig, ClientFactory
 from ag_ui.core import RunAgentInput, RunErrorEvent
 from ag_ui_strands import StrandsAgent
+from bedrock_agentcore.identity.auth import requires_access_token
 from bedrock_agentcore.memory.integrations.strands.config import (
     AgentCoreMemoryConfig,
     RetrievalConfig,
@@ -20,11 +23,13 @@ from bedrock_agentcore.runtime import (
     BedrockAgentCoreApp,
     RequestContext,
 )
-from strands import Agent
+from strands import Agent, tool
+from strands.agent.a2a_agent import A2AAgent
 from strands.models import BedrockModel
 from tools.gateway import create_gateway_mcp_client
 from tools.github.strands_tools import make_github_tools
 from utils.auth import extract_user_id_from_context
+from utils.ssm import get_ssm_parameter
 
 from tools.code_interpreter import StrandsCodeInterpreterTools
 
@@ -85,6 +90,88 @@ def _create_session_manager(
     )
 
 
+def _make_investigation_tool(session_id: str):
+    """Create the investigate_finding Strands tool bound to this session.
+
+    Discovers the investigation agent URL from SSM (/{STACK_NAME}/investigation-agent-url).
+    Returns None if the SSM parameter doesn't exist yet (graceful degradation during rollout
+    — the orchestrator works before the investigation agent is deployed).
+    Raises if SSM lookup fails for any other reason (permissions, network, etc.).
+    """
+    stack_name = os.environ.get("STACK_NAME")
+    investigation_agent_url = None
+    if stack_name:
+        ssm_param = f"/{stack_name}/investigation-agent-url"
+        try:
+            investigation_agent_url = get_ssm_parameter(ssm_param)
+        except ValueError as exc:
+            if "not found" in str(exc).lower():
+                logger.info(
+                    "SSM parameter %s not found; investigation tool disabled (agent not yet deployed)",
+                    ssm_param,
+                )
+            else:
+                logger.exception(
+                    "Failed to retrieve SSM parameter %s for investigation tool",
+                    ssm_param,
+                )
+                raise
+
+    if not investigation_agent_url:
+        return None
+
+    provider = os.environ.get("GATEWAY_CREDENTIAL_PROVIDER_NAME")
+    if not provider:
+        logger.warning(
+            "GATEWAY_CREDENTIAL_PROVIDER_NAME not set; skipping investigation tool"
+        )
+        return None
+
+    @requires_access_token(provider_name=provider, auth_flow="M2M")
+    def _get_token(token: str = None):
+        return token
+
+    # Capture these in the closure; the actual token is fetched fresh per invocation
+    # inside investigate_finding() to avoid stale-token failures after expiry.
+    _endpoint = investigation_agent_url
+    _session_id = session_id
+
+    @tool
+    def investigate_finding(
+        finding_id: str, account_id: str, region: str = "us-east-1"
+    ) -> str:
+        """Perform a deep investigation of a GuardDuty finding.
+        Correlates with CloudTrail events, builds a timeline, and assesses blast radius.
+        Use this for thorough analysis instead of calling GuardDuty/CloudTrail tools directly."""
+        # Fresh token + client per call — Cognito M2M tokens expire (~1 hr);
+        # creating per-invocation ensures we never use a stale credential.
+        token = _get_token()
+        client_factory = ClientFactory(
+            ClientConfig(
+                httpx_client=httpx.AsyncClient(
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id": _session_id,
+                    },
+                    timeout=120,
+                ),
+                streaming=True,
+            )
+        )
+        remote_agent = A2AAgent(
+            endpoint=_endpoint,
+            name="investigation_agent",
+            description="Deep incident investigation specialist",
+            a2a_client_factory=client_factory,
+        )
+        return remote_agent(
+            f"Investigate GuardDuty finding {finding_id} in account {account_id} region {region}. "
+            "Correlate with CloudTrail, build an event timeline, and assess blast radius."
+        ).message
+
+    return investigate_finding
+
+
 def _create_agent(user_id: str, session_id: str) -> Agent:
     """Create a Strands Agent with Gateway MCP tools, GitHub tools, Memory, and Code Interpreter."""
     gateway_client = create_gateway_mcp_client()
@@ -92,14 +179,20 @@ def _create_agent(user_id: str, session_id: str) -> Agent:
     region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
     code_tools = StrandsCodeInterpreterTools(region)
 
+    tools = [
+        gateway_client,
+        code_tools.execute_python_securely,
+        *make_github_tools(user_id),
+    ]
+
+    investigation_tool = _make_investigation_tool(session_id)
+    if investigation_tool:
+        tools.append(investigation_tool)
+
     return Agent(
         name="strands_agent",
         system_prompt=SYSTEM_PROMPT,
-        tools=[
-            gateway_client,
-            code_tools.execute_python_securely,
-            *make_github_tools(user_id),
-        ],
+        tools=tools,
         model=_build_model(),
         session_manager=_create_session_manager(user_id, session_id),
     )
