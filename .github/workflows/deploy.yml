@@ -6,6 +6,7 @@ on:
     paths:
       - 'infra-cdk/**'
       - 'gateway/**'
+      - 'patterns/**'
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
 

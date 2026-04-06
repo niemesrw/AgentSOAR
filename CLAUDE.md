@@ -19,8 +19,8 @@
 
 ## Deploy trigger paths
 
-The Deploy workflow only fires on changes to `infra-cdk/**` or `gateway/**`.
-Changes to `patterns/**` (agent code) require a manual deploy trigger:
+The Deploy workflow fires automatically on changes to `infra-cdk/**`, `gateway/**`, or `patterns/**`.
+It can also be triggered manually:
 ```bash
 gh workflow run deploy.yml --repo niemesrw/AgentSOAR --ref main
 ```
