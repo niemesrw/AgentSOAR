@@ -33,10 +33,10 @@ jobs:
         run: pip install uv
 
       - name: Ruff check
-        run: uv run ruff check gateway/
+        run: uvx ruff check gateway/
 
       - name: Ruff format check
-        run: uv run ruff format --check gateway/
+        run: uvx ruff format --check gateway/
 
       - uses: actions/setup-node@v4
         with:
