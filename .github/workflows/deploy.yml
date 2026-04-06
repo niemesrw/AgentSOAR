@@ -82,6 +82,13 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-chaining: true
 
+      # ARM64 Lambda bundling (PythonFunction) requires QEMU on x86 runners
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - uses: docker/setup-buildx-action@v3
+
       - name: Install CDK dependencies
         working-directory: infra-cdk
         run: npm ci
