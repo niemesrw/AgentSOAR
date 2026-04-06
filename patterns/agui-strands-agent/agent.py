@@ -53,7 +53,12 @@ SYSTEM_PROMPT = (
     "prior context and reference it in your reasoning. Your responses are also saved to memory "
     "automatically, so future sessions benefit from what you learn today. "
     "If no memory context appears, either no relevant prior incidents exist yet or the namespaces "
-    "are still being populated from recent sessions."
+    "are still being populated from recent sessions.\n\n"
+    "Tool routing: when asked to investigate or analyze a specific GuardDuty finding, always use "
+    "the investigate_finding tool — it delegates to a specialist investigation agent that performs "
+    "deep GuardDuty + CloudTrail correlation, builds an event timeline, and assesses blast radius. "
+    "Use the raw gateway GuardDuty and CloudTrail tools only for quick lookups "
+    "(e.g. 'list findings', 'how many open findings') not for full investigations."
 )
 
 
