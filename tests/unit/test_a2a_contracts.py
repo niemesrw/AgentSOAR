@@ -130,3 +130,43 @@ def test_a2a_server_has_to_starlette_app():
 
     assert hasattr(A2AServer, "to_starlette_app")
     assert callable(A2AServer.to_starlette_app)
+
+
+def test_a2a_agent_card_discovery_uses_unauthenticated_client():
+    """A2AAgent.get_agent_card() uses a plain httpx.AsyncClient without auth headers.
+
+    Regression: AgentCore Runtime rejects unauthenticated requests with 404.
+    Fix: pre-seed _agent_card on the A2AAgent instance to skip discovery.
+    This test documents that the upstream behavior has NOT changed so we know
+    if a future strands upgrade fixes it (at which point we can remove the workaround).
+    """
+    import inspect
+
+    from strands.agent.a2a_agent import A2AAgent
+
+    src = inspect.getsource(A2AAgent.get_agent_card)
+    # The method creates its own httpx.AsyncClient with no headers — confirm this
+    assert "httpx.AsyncClient" in src, "get_agent_card must still create its own client"
+    assert "_agent_card is not None" in src, (
+        "get_agent_card must still short-circuit when _agent_card is pre-set"
+    )
+
+
+def test_agent_card_can_be_pre_seeded():
+    """AgentCard can be constructed and set on A2AAgent to bypass discovery."""
+    from a2a.types import AgentCapabilities, AgentCard, AgentSkill
+    from strands.agent.a2a_agent import A2AAgent
+
+    card = AgentCard(
+        name="investigation_agent",
+        description="test",
+        url="http://placeholder",
+        version="1.0.0",
+        capabilities=AgentCapabilities(streaming=True),
+        defaultInputModes=["text"],
+        defaultOutputModes=["text"],
+        skills=[AgentSkill(id="test", name="test", description="test", tags=[])],
+    )
+    agent = A2AAgent(endpoint="http://placeholder", name="test")
+    agent._agent_card = card
+    assert agent._agent_card is card

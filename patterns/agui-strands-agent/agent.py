@@ -9,6 +9,7 @@ import os
 
 import httpx
 from a2a.client import ClientConfig, ClientFactory
+from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 from ag_ui.core import RunAgentInput, RunErrorEvent
 from ag_ui_strands import StrandsAgent
 from bedrock_agentcore.identity.auth import requires_access_token
@@ -171,6 +172,26 @@ def _make_investigation_tool(session_id: str):
             name="investigation_agent",
             description="Deep incident investigation specialist",
             a2a_client_factory=client_factory,
+        )
+        # Pre-seed the agent card so A2AAgent skips its unauthenticated GET to
+        # /.well-known/agent-card.json — AgentCore Runtime rejects that request
+        # (requires JWT on all endpoints) causing a 404 before any work is done.
+        remote_agent._agent_card = AgentCard(
+            name="investigation_agent",
+            description="Deep incident investigation specialist",
+            url=_endpoint,
+            version="1.0.0",
+            capabilities=AgentCapabilities(streaming=True),
+            defaultInputModes=["text"],
+            defaultOutputModes=["text"],
+            skills=[
+                AgentSkill(
+                    id="investigate",
+                    name="Investigate GuardDuty finding",
+                    description="Deep GuardDuty + CloudTrail correlation, timeline, blast radius",
+                    tags=[],
+                )
+            ],
         )
         return str(
             remote_agent(
