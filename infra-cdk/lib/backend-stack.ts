@@ -781,9 +781,10 @@ export class BackendStack extends cdk.NestedStack {
       code: lambda.Code.fromAsset(path.join(__dirname, "../../gateway/tools/cloudtrail_tool")), // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
       timeout: cdk.Duration.seconds(60),
       environment: {
-        // Centralized CloudTrail S3 bucket (org trail in management account)
-        CLOUDTRAIL_LOGS_BUCKET: "cloudtrail-logs-982682372189-us-east-1",
-        CLOUDTRAIL_LOGS_REGION: "us-east-1",
+        // Centralized CloudTrail logs bucket (log-archive account)
+        CLOUDTRAIL_LOGS_BUCKET: "cloudtrail-logs-779315395440-us-east-1",
+        CLOUDTRAIL_ORG_ID: "o-jzaozr7wc4",
+        CLOUDTRAIL_MANAGEMENT_ACCOUNT: "982682372189",
       },
       logGroup: new logs.LogGroup(this, "CloudTrailToolLambdaLogGroup", {
         logGroupName: `/aws/lambda/${config.stack_name_base}-cloudtrail-tool`,
@@ -811,8 +812,8 @@ export class BackendStack extends cdk.NestedStack {
         effect: iam.Effect.ALLOW,
         actions: ["s3:GetObject", "s3:ListBucket"],
         resources: [
-          "arn:aws:s3:::cloudtrail-logs-982682372189-us-east-1",
-          "arn:aws:s3:::cloudtrail-logs-982682372189-us-east-1/*",
+          "arn:aws:s3:::cloudtrail-logs-779315395440-us-east-1",
+          "arn:aws:s3:::cloudtrail-logs-779315395440-us-east-1/*",
         ],
       })
     )

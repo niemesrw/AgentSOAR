@@ -33,25 +33,64 @@ def _s3_client() -> Any:
     return boto3.client("s3")
 
 
-def _list_account_prefixes(bucket: str) -> list[str]:
-    """Return all account IDs present under AWSLogs/ in the centralized bucket."""
+def _list_account_prefixes(bucket: str, org_id: str | None) -> list[str]:
+    """
+    Return all account IDs present in the centralized bucket.
+
+    Org trails use two distinct prefix structures:
+      - Management account:  AWSLogs/{account_id}/CloudTrail/...
+      - Member accounts:     AWSLogs/{org_id}/{account_id}/CloudTrail/...
+    """
     s3 = _s3_client()
+    accounts: set[str] = set()
+
+    # Direct prefixes (management account)
     result = s3.list_objects_v2(Bucket=bucket, Prefix="AWSLogs/", Delimiter="/")
-    prefixes = result.get("CommonPrefixes", [])
-    accounts = []
-    for p in prefixes:
-        # prefix looks like "AWSLogs/123456789012/"
-        parts = p["Prefix"].rstrip("/").split("/")
-        if len(parts) == 2:
-            accounts.append(parts[1])
-    return accounts
+    for p in result.get("CommonPrefixes", []):
+        segment = p["Prefix"].rstrip("/").split("/")[-1]
+        if segment.isdigit():  # account ID, not org ID
+            accounts.add(segment)
+
+    # Org-prefixed member accounts
+    if org_id:
+        result = s3.list_objects_v2(
+            Bucket=bucket, Prefix=f"AWSLogs/{org_id}/", Delimiter="/"
+        )
+        for p in result.get("CommonPrefixes", []):
+            segment = p["Prefix"].rstrip("/").split("/")[-1]
+            if segment.isdigit():
+                accounts.add(segment)
+
+    return list(accounts)
 
 
-def _s3_key_prefix(account_id: str, region: str, dt: datetime) -> str:
-    return (
-        f"AWSLogs/{account_id}/CloudTrail/{region}/"
-        f"{dt.year:04d}/{dt.month:02d}/{dt.day:02d}/"
-    )
+def _s3_prefixes_for_account(
+    account_id: str,
+    org_id: str | None,
+    management_account_id: str | None,
+    region: str,
+    dt: datetime,
+) -> list[str]:
+    """
+    Return candidate S3 key prefixes for a given account/region/date.
+
+    Management account logs land under both the direct and org-prefixed paths.
+    Member accounts only land under the org-prefixed path.
+    """
+    date_path = f"{dt.year:04d}/{dt.month:02d}/{dt.day:02d}/"
+    prefixes = []
+
+    # Direct path: used by the management account (trail owner)
+    if account_id == management_account_id or not org_id:
+        prefixes.append(f"AWSLogs/{account_id}/CloudTrail/{region}/{date_path}")
+
+    # Org path: used by all org member accounts (including management account)
+    if org_id:
+        prefixes.append(
+            f"AWSLogs/{org_id}/{account_id}/CloudTrail/{region}/{date_path}"
+        )
+
+    return prefixes
 
 
 def _list_keys_for_window(
@@ -60,12 +99,13 @@ def _list_keys_for_window(
     regions: list[str],
     start_dt: datetime,
     end_dt: datetime,
+    org_id: str | None = None,
+    management_account_id: str | None = None,
 ) -> list[str]:
     """List all S3 keys that could contain events in the given window."""
     s3 = _s3_client()
     keys: list[str] = []
 
-    # Enumerate every (account, region, date) combination in the window
     current = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
     dates: list[datetime] = []
     while current <= end_dt:
@@ -75,17 +115,20 @@ def _list_keys_for_window(
     for account_id in account_ids:
         for region in regions:
             for dt in dates:
-                prefix = _s3_key_prefix(account_id, region, dt)
-                paginator = s3.get_paginator("list_objects_v2")
-                for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-                    for obj in page.get("Contents", []):
-                        keys.append(obj["Key"])
-                        if len(keys) >= _MAX_S3_FILES:
-                            logger.warning(
-                                "Reached %d file limit; results may be truncated",
-                                _MAX_S3_FILES,
-                            )
-                            return keys
+                prefixes = _s3_prefixes_for_account(
+                    account_id, org_id, management_account_id, region, dt
+                )
+                for prefix in prefixes:
+                    paginator = s3.get_paginator("list_objects_v2")
+                    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                        for obj in page.get("Contents", []):
+                            keys.append(obj["Key"])
+                            if len(keys) >= _MAX_S3_FILES:
+                                logger.warning(
+                                    "Reached %d file limit; results may be truncated",
+                                    _MAX_S3_FILES,
+                                )
+                                return keys
     return keys
 
 
@@ -207,10 +250,14 @@ def _query_s3(
     start_dt: datetime,
     end_dt: datetime,
     max_results: int,
+    org_id: str | None = None,
+    management_account_id: str | None = None,
     **filters: Any,
 ) -> list[dict[str, Any]]:
     """Fetch and filter CloudTrail records from the centralized S3 bucket."""
-    keys = _list_keys_for_window(bucket, account_ids, regions, start_dt, end_dt)
+    keys = _list_keys_for_window(
+        bucket, account_ids, regions, start_dt, end_dt, org_id, management_account_id
+    )
     if not keys:
         return []
 
@@ -351,6 +398,8 @@ def lookup_cloudtrail_events(
     region = region or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
     max_results = max(1, min(50, max_results))
     bucket = os.environ.get("CLOUDTRAIL_LOGS_BUCKET", "")
+    org_id = os.environ.get("CLOUDTRAIL_ORG_ID")
+    management_account_id = os.environ.get("CLOUDTRAIL_MANAGEMENT_ACCOUNT")
 
     now = datetime.now(timezone.utc)
     end_dt = (
@@ -367,7 +416,7 @@ def lookup_cloudtrail_events(
         account_ids = [account_id]
     elif bucket:
         try:
-            account_ids = _list_account_prefixes(bucket)
+            account_ids = _list_account_prefixes(bucket, org_id)
         except Exception as exc:
             logger.warning("Could not list account prefixes: %s", exc)
             account_ids = []
@@ -392,7 +441,15 @@ def lookup_cloudtrail_events(
     if bucket and account_ids and start_dt < s3_end:
         try:
             s3_records = _query_s3(
-                bucket, account_ids, regions, start_dt, s3_end, max_results, **filters
+                bucket,
+                account_ids,
+                regions,
+                start_dt,
+                s3_end,
+                max_results,
+                org_id=org_id,
+                management_account_id=management_account_id,
+                **filters,
             )
             all_records.extend(s3_records)
             sources.append(
