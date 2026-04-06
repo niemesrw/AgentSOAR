@@ -127,7 +127,7 @@ def _make_investigation_tool(session_id: str):
         )
         return None
 
-    @requires_access_token(provider_name=provider, auth_flow="M2M")
+    @requires_access_token(provider_name=provider, auth_flow="M2M", scopes=[])
     def _get_token(token: str = None):
         return token
 
