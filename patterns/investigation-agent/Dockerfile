@@ -25,7 +25,7 @@ RUN uv pip install --no-cache -r requirements.txt && \
 RUN useradd -m -u 1000 bedrock_agentcore
 USER bedrock_agentcore
 
-EXPOSE 8080
+EXPOSE 9000
 
 # Copy agent code — reuse agui-strands-agent tools (gateway client, utils)
 COPY patterns/investigation-agent/agent.py .
@@ -35,7 +35,7 @@ COPY patterns/utils/ utils/
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/ping', timeout=2)" || exit 1
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:9000/ping', timeout=2)" || exit 1
 
 # Start A2A server
 CMD ["opentelemetry-instrument", "python", "main.py"]

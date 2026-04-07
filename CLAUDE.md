@@ -52,6 +52,34 @@ aws sso login --profile blanxlait-security
 - **Frontend**: React + AG-UI parser auto-selected by `agui-` prefix in `config.yaml`
 - **Infra**: CDK in `infra-cdk/`
 
+## AgentCore runtime protocol types — critical
+
+Three CDK `ProtocolType` values; each expects a **different port** in the container:
+
+| CDK ProtocolType | Use for | Container port | Container path |
+|-----------------|---------|---------------|----------------|
+| `AGUI`          | Main orchestrator (AG-UI streaming) | 8080 | `POST /invocations` |
+| `HTTP`          | Generic REST APIs | 8080 | `POST /` (root) |
+| `A2A`           | A2A sub-agents (JSON-RPC) | **9000** | `POST /` (root) |
+
+**For A2A sub-agents, use `ProtocolType.A2A` (port 9000) + `build_a2a_app()`:**
+
+```python
+from bedrock_agentcore.runtime.a2a import build_a2a_app
+from strands.multiagent.a2a.executor import StrandsA2AExecutor
+
+app = build_a2a_app(PerRequestExecutor())  # registers POST /, GET /ping, GET /.well-known/agent-card.json
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=9000)  # A2A protocol uses port 9000
+```
+
+Dockerfile must `EXPOSE 9000` and healthcheck must hit port 9000.
+
+`build_a2a_app` reads `AGENTCORE_RUNTIME_URL` (injected by AgentCore) for the agent card URL.
+Do NOT use `A2AServer.to_starlette_app()` — it uses FastAPI and mounts at the wrong path.
+Do NOT use `ProtocolType.HTTP` for A2A agents — AgentCore routes to port 8080, container is on 9000 → 404.
+
 ## Adding a Gateway Tool
 
 1. Create `gateway/tools/<name>/<name>_lambda.py` following the handler pattern in `gateway/tools/sample_tool/`

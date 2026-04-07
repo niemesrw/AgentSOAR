@@ -1,11 +1,9 @@
 """A2A server entrypoint for the Investigation Agent.
 
-The investigation agent runs as an A2A-compliant HTTP server inside an AgentCore
-HTTP protocol runtime. AgentCore strips the entire /runtimes/<arn>/invocations
-prefix before forwarding to the container, so the container receives requests at
-root (/). We use bedrock_agentcore.runtime.a2a.build_a2a_app() which registers
-the A2A JSON-RPC handler at POST / and GET /ping — the correct paths for HTTP
-protocol runtimes (as opposed to AGUI runtimes which receive POST /invocations).
+The investigation agent runs as an A2A-compliant server inside an AgentCore
+A2A protocol runtime. AgentCore A2A runtimes forward requests to the container
+on port 9000 at root (/). We use bedrock_agentcore.runtime.a2a.build_a2a_app()
+which registers the A2A JSON-RPC handler at POST / and GET /ping.
 
 The agent is created per-request (inside PerRequestExecutor.execute) because
 the gateway MCP client uses @requires_access_token with auth_flow='M2M', which
@@ -59,4 +57,4 @@ class PerRequestExecutor(AgentExecutor):
 app = build_a2a_app(PerRequestExecutor())
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8080)  # nosec B104 — container-only; AgentCore Runtime handles external TLS/auth
+    uvicorn.run(app, host="0.0.0.0", port=9000)  # nosec B104 — container-only; AgentCore Runtime handles external TLS/auth

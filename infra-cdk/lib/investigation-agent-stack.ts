@@ -112,7 +112,7 @@ export class InvestigationAgentStack extends cdk.NestedStack {
       agentRuntimeArtifact: image,
       executionRole: agentRole,
       networkConfiguration: agentcore.RuntimeNetworkConfiguration.usingPublicNetwork(),
-      protocolConfiguration: agentcore.ProtocolType.HTTP,
+      protocolConfiguration: agentcore.ProtocolType.A2A,
       authorizerConfiguration: authorizerConfiguration,
       environmentVariables: {
         STACK_NAME: props.stackName,
