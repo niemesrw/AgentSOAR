@@ -25,8 +25,8 @@ repos:
 
       - id: investigation-agent-startup
         name: Investigation agent startup
-        entry: uv run --extra agent-strands pytest tests/unit/test_investigation_agent_startup.py -q
+        entry: uv run --extra agent-strands pytest tests/unit/test_investigation_agent_startup.py tests/unit/test_investigation_agent_a2a.py -q
         language: system
         pass_filenames: false
-        # Run when investigation agent code or the test itself changes
-        files: ^(patterns/investigation-agent/|tests/unit/test_investigation_agent_startup\.py)
+        # Run when investigation agent code or the tests themselves change
+        files: ^(patterns/investigation-agent/|tests/unit/test_investigation_agent_)
