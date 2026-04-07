@@ -404,7 +404,9 @@ class TestHandler:
                 "accountId": "123456789012",
             },
         }
-        with patch.dict(guardduty_module.os.environ, {"FINDINGS_TABLE": "test-findings-table"}):
+        with patch.dict(
+            guardduty_module.os.environ, {"FINDINGS_TABLE": "test-findings-table"}
+        ):
             with patch("boto3.resource", return_value=mock_resource):
                 resp = guardduty_module.handler(event, None)
 
