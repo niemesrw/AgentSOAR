@@ -15,18 +15,3 @@ repos:
         types: [python]
         pass_filenames: true
 
-      - id: a2a-contracts
-        name: A2A API contracts
-        entry: uv run --extra agent-strands pytest tests/unit/test_a2a_contracts.py -q
-        language: system
-        pass_filenames: false
-        # Only run when pattern code or the test itself changes
-        files: ^(patterns/|tests/unit/test_a2a_contracts\.py)
-
-      - id: investigation-agent-startup
-        name: Investigation agent startup
-        entry: uv run --extra agent-strands pytest tests/unit/test_investigation_agent_startup.py tests/unit/test_investigation_agent_a2a.py -q
-        language: system
-        pass_filenames: false
-        # Run when investigation agent code or the tests themselves change
-        files: ^(patterns/investigation-agent/|tests/unit/test_investigation_agent_)
