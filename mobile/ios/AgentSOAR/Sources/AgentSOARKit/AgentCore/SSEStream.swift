@@ -14,23 +14,26 @@ public enum SSEStream {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    var buffer = ""
+                    // Buffer raw bytes and decode each line as UTF-8 — building
+                    // the line out of `Character(UnicodeScalar(byte))` would
+                    // mangle multi-byte scalars.
+                    var buffer = Data()
+                    let newline = UInt8(ascii: "\n")
                     for try await byte in bytes {
-                        let scalar = UnicodeScalar(byte)
-                        let char = Character(scalar)
-                        if char == "\n" {
-                            let line = buffer
-                            buffer = ""
+                        if byte == newline {
+                            let line = String(decoding: buffer, as: UTF8.self)
+                            buffer.removeAll(keepingCapacity: true)
                             guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
                             parser.parse(line: line) { event in
                                 continuation.yield(event)
                             }
                         } else {
-                            buffer.append(char)
+                            buffer.append(byte)
                         }
                     }
-                    if !buffer.trimmingCharacters(in: .whitespaces).isEmpty {
-                        parser.parse(line: buffer) { event in
+                    let trailing = String(decoding: buffer, as: UTF8.self)
+                    if !trailing.trimmingCharacters(in: .whitespaces).isEmpty {
+                        parser.parse(line: trailing) { event in
                             continuation.yield(event)
                         }
                     }

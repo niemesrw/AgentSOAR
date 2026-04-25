@@ -51,15 +51,4 @@ public struct AgentCoreConfig: Codable, Sendable, Equatable {
         let data = try Data(contentsOf: url)
         return try JSONDecoder().decode(AgentCoreConfig.self, from: data)
     }
-
-    /// Cognito's OAuth authorization endpoint, derived from the OIDC authority.
-    /// Cognito User Pool authorities follow `https://cognito-idp.{region}.amazonaws.com/{poolId}`,
-    /// but the OAuth endpoints live on the user pool domain. The Cognito Hosted UI
-    /// domain is configured separately in `aws-exports.json` via `oauthDomain` when present.
-    public var oauthDomain: URL? {
-        // The frontend reads OAuth endpoints from oidc-client-ts, which auto-discovers them
-        // from the OIDC `.well-known/openid-configuration` document. We do the same — see
-        // CognitoAuthClient.discoverEndpoints().
-        URL(string: authority)
-    }
 }

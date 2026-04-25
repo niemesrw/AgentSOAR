@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Security
 
 /// Generates PKCE code verifier / challenge pairs per RFC 7636.
 public enum PKCE {
@@ -17,7 +18,10 @@ public enum PKCE {
 
     private static func randomURLSafeString(byteCount: Int) -> String {
         var bytes = [UInt8](repeating: 0, count: byteCount)
-        _ = SecRandomCopyBytes(kSecRandomDefault, byteCount, &bytes)
+        // Falling back to a predictable verifier would silently break PKCE's
+        // CSRF protections; trap on failure instead.
+        let status = SecRandomCopyBytes(kSecRandomDefault, byteCount, &bytes)
+        precondition(status == errSecSuccess, "SecRandomCopyBytes failed: \(status)")
         return Data(bytes).base64URLEncodedString()
     }
 

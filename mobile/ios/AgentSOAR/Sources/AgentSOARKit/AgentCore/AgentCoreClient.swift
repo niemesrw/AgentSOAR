@@ -92,10 +92,11 @@ public final class AgentCoreClient: Sendable {
         guard let http = response as? HTTPURLResponse else { throw AgentCoreError.invalidResponse }
 
         guard (200..<300).contains(http.statusCode) else {
-            var bodyText = ""
+            var bodyData = Data()
             for try await byte in bytes {
-                bodyText.append(Character(UnicodeScalar(byte)))
+                bodyData.append(byte)
             }
+            let bodyText = String(decoding: bodyData, as: UTF8.self)
             throw AgentCoreError.http(status: http.statusCode, body: bodyText)
         }
 

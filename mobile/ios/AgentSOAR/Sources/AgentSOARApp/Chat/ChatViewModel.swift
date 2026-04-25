@@ -11,6 +11,7 @@ public final class ChatViewModel: ObservableObject {
     private let client: AgentCoreClient
     private let auth: CognitoAuthClient
     private var sessionId: String
+    private var sendTask: Task<Void, Never>?
 
     public init(client: AgentCoreClient, auth: CognitoAuthClient) {
         self.client = client
@@ -19,46 +20,61 @@ public final class ChatViewModel: ObservableObject {
     }
 
     public func resetSession() {
+        sendTask?.cancel()
+        sendTask = nil
         sessionId = client.generateSessionId()
         messages.removeAll()
     }
 
-    public func send() async {
+    /// Cancels the in-flight stream, if any. Safe to call when idle.
+    public func cancel() {
+        sendTask?.cancel()
+    }
+
+    public func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isLoading else { return }
         draft = ""
         error = nil
 
         messages.append(ChatMessage(role: .user, text: text))
-        var assistant = ChatMessage(role: .assistant, isStreaming: true)
+        let assistant = ChatMessage(role: .assistant, isStreaming: true)
         messages.append(assistant)
         let assistantId = assistant.id
         isLoading = true
-        defer { isLoading = false }
 
-        do {
-            guard let token = try await auth.validAccessToken() else {
-                error = "Sign in required."
-                markFinished(id: assistantId)
-                return
+        sendTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.markFinished(id: assistantId)
+                self.isLoading = false
+                self.sendTask = nil
             }
+            do {
+                guard let token = try await self.auth.validAccessToken() else {
+                    self.error = "Sign in required."
+                    return
+                }
 
-            let stream = try await client.invoke(
-                query: text,
-                sessionId: sessionId,
-                accessToken: token
-            )
+                let stream = try await self.client.invoke(
+                    query: text,
+                    sessionId: self.sessionId,
+                    accessToken: token
+                )
 
-            for try await event in stream {
-                apply(event: event, to: assistantId, snapshot: &assistant)
+                for try await event in stream {
+                    if Task.isCancelled { break }
+                    self.apply(event: event, to: assistantId)
+                }
+            } catch is CancellationError {
+                // user cancelled — keep partial message, clear streaming state
+            } catch {
+                self.error = error.localizedDescription
             }
-        } catch {
-            self.error = error.localizedDescription
         }
-        markFinished(id: assistantId)
     }
 
-    private func apply(event: StreamEvent, to id: UUID, snapshot: inout ChatMessage) {
+    private func apply(event: StreamEvent, to id: UUID) {
         guard let idx = messages.firstIndex(where: { $0.id == id }) else { return }
         switch event {
         case let .text(content):

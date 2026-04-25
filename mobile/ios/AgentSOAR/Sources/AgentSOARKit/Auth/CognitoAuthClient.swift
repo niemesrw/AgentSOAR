@@ -33,6 +33,8 @@ private struct TokenResponse: Decodable {
 public enum AuthError: Error, LocalizedError {
     case userCancelled
     case missingCode
+    case stateMismatch
+    case invalidAuthority
     case discoveryFailed
     case tokenExchangeFailed(String)
     case notAvailable
@@ -41,6 +43,8 @@ public enum AuthError: Error, LocalizedError {
         switch self {
         case .userCancelled: return "Sign-in cancelled."
         case .missingCode: return "No authorization code returned by Cognito."
+        case .stateMismatch: return "OAuth state mismatch — possible CSRF."
+        case .invalidAuthority: return "Authority URL is invalid."
         case .discoveryFailed: return "Failed to load OIDC discovery document."
         case let .tokenExchangeFailed(detail): return "Token exchange failed: \(detail)"
         case .notAvailable: return "Web auth is unavailable on this platform."
@@ -57,6 +61,13 @@ public final class CognitoAuthClient: NSObject {
     private let config: AgentCoreConfig
     private let store: KeychainTokenStore
     private let session: URLSession
+
+    #if canImport(AuthenticationServices)
+    /// Strong reference to the in-flight web auth session. `ASWebAuthenticationSession`
+    /// is cancelled if it gets deallocated mid-flow, so we hold it here until the
+    /// completion handler fires.
+    @MainActor private var currentAuthSession: ASWebAuthenticationSession?
+    #endif
 
     public init(
         config: AgentCoreConfig,
@@ -92,9 +103,11 @@ public final class CognitoAuthClient: NSObject {
     public func signIn(presentationAnchor: ASPresentationAnchor) async throws -> KeychainTokenStore.Tokens {
         let discovery = try await discoverEndpoints()
         let pkce = PKCE.generate()
-        let state = UUID().uuidString
+        let expectedState = UUID().uuidString
 
-        var components = URLComponents(url: discovery.authorizationEndpoint, resolvingAgainstBaseURL: false)!
+        guard var components = URLComponents(url: discovery.authorizationEndpoint, resolvingAgainstBaseURL: false) else {
+            throw AuthError.discoveryFailed
+        }
         components.queryItems = [
             URLQueryItem(name: "client_id", value: config.clientId),
             URLQueryItem(name: "response_type", value: config.responseType),
@@ -102,7 +115,7 @@ public final class CognitoAuthClient: NSObject {
             URLQueryItem(name: "redirect_uri", value: config.redirectUri),
             URLQueryItem(name: "code_challenge", value: pkce.challenge),
             URLQueryItem(name: "code_challenge_method", value: pkce.method),
-            URLQueryItem(name: "state", value: state),
+            URLQueryItem(name: "state", value: expectedState),
         ]
         guard let authURL = components.url else { throw AuthError.discoveryFailed }
 
@@ -112,7 +125,8 @@ public final class CognitoAuthClient: NSObject {
             let session = ASWebAuthenticationSession(
                 url: authURL,
                 callbackURLScheme: callbackScheme
-            ) { url, error in
+            ) { [weak self] url, error in
+                Task { @MainActor [weak self] in self?.currentAuthSession = nil }
                 if let error {
                     if (error as NSError).code == ASWebAuthenticationSessionError.canceledLogin.rawValue {
                         cont.resume(throwing: AuthError.userCancelled)
@@ -126,12 +140,17 @@ public final class CognitoAuthClient: NSObject {
             }
             session.presentationContextProvider = AnchorProvider(anchor: presentationAnchor)
             session.prefersEphemeralWebBrowserSession = false
+            currentAuthSession = session
             session.start()
         }
 
-        guard let code = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?
-                .queryItems?.first(where: { $0.name == "code" })?.value
-        else { throw AuthError.missingCode }
+        let queryItems = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?.queryItems
+        guard let returnedState = queryItems?.first(where: { $0.name == "state" })?.value,
+              returnedState == expectedState
+        else { throw AuthError.stateMismatch }
+        guard let code = queryItems?.first(where: { $0.name == "code" })?.value else {
+            throw AuthError.missingCode
+        }
 
         return try await exchangeCode(
             code: code,
@@ -150,7 +169,9 @@ public final class CognitoAuthClient: NSObject {
     private func discoverEndpoints() async throws -> OIDCDiscovery {
         // Cognito User Pool authorities serve OIDC discovery at
         // `{authority}/.well-known/openid-configuration`.
-        let discoveryURL = URL(string: "\(config.authority)/.well-known/openid-configuration")!
+        guard let authorityURL = URL(string: config.authority),
+              let discoveryURL = URL(string: "\(authorityURL.absoluteString)/.well-known/openid-configuration")
+        else { throw AuthError.invalidAuthority }
         let (data, response) = try await session.data(from: discoveryURL)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw AuthError.discoveryFailed
