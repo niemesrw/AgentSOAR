@@ -143,6 +143,7 @@ The out-of-the-box architecture is shown above. The diagram illustrates the auth
 ### Tech Stack
 
 - **Frontend**: React with TypeScript, Vite, Tailwind CSS, and shadcn components - infinitely flexible and ready for coding assistants
+- **iOS app**: Native SwiftUI client (`mobile/ios/`) — same wire format as the web client, AG-UI streaming, Cognito PKCE
 - **Agent Providers**: Multiple agent providers supported (Strands, LangGraph, etc.) running within AgentCore Runtime
 - **Authentication**: AWS Cognito User Pool with OAuth support for easy swapping out Cognito
 - **Infrastructure**: CDK deployment with Amplify Hosting for frontend and AgentCore backend ([Terraform also supported](infra-terraform/README.md))
