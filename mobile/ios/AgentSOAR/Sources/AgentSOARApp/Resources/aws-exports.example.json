@@ -1,0 +1,11 @@
+{
+  "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:429971481640:runtime/REPLACE_ME",
+  "awsRegion": "us-east-1",
+  "agentPattern": "agui-strands-agent",
+
+  "authority": "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_REPLACE_ME",
+  "client_id": "REPLACE_ME",
+  "redirect_uri": "agentsoar://auth/callback",
+  "response_type": "code",
+  "scope": "email openid profile"
+}
