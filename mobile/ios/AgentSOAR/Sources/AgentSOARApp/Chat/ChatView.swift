@@ -28,9 +28,15 @@ public struct ChatView: View {
                     Button("Sign out", action: onSignOut)
                 }
             }
-            .alert("Error", isPresented: .constant(vm.error != nil), actions: {
-                Button("OK") { vm.error = nil }
-            }, message: { Text(vm.error ?? "") })
+            .alert(
+                "Error",
+                isPresented: Binding(
+                    get: { vm.error != nil },
+                    set: { isPresented in if !isPresented { vm.error = nil } }
+                ),
+                actions: { Button("OK") { vm.error = nil } },
+                message: { Text(vm.error ?? "") }
+            )
         }
     }
 
@@ -59,12 +65,16 @@ public struct ChatView: View {
                 .lineLimit(1...5)
                 .disabled(vm.isLoading)
             Button {
-                Task { await vm.send() }
+                if vm.isLoading {
+                    vm.cancel()
+                } else {
+                    vm.send()
+                }
             } label: {
                 Image(systemName: vm.isLoading ? "stop.circle.fill" : "arrow.up.circle.fill")
                     .font(.system(size: 28))
             }
-            .disabled(vm.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || vm.isLoading)
+            .disabled(!vm.isLoading && vm.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .padding(.horizontal)
         .padding(.vertical, 8)

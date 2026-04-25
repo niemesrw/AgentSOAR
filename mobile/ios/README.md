@@ -37,8 +37,9 @@ mobile/ios/AgentSOAR/
 
 ## Building the iOS app
 
-The Swift Package compiles the SDK + tests on macOS / Linux. The full app needs
-Xcode (SwiftUI, Keychain, ASWebAuthenticationSession).
+The Swift Package compiles the SDK + tests on macOS (the SDK depends on
+`CryptoKit` and `Security`, which are Apple-only). The full app needs Xcode
+(SwiftUI, Keychain, ASWebAuthenticationSession).
 
 ### 1. Create the Xcode project
 
@@ -99,7 +100,7 @@ swift test
 
 The tests cover the AG-UI parser (event mapping, malformed inputs, full
 end-to-end stream), PKCE generation, and `AgentCoreConfig` decoding. They run
-on macOS or Linux without simulators.
+on macOS without simulators.
 
 ## Wire format
 

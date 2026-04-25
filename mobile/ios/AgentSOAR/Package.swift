@@ -4,6 +4,9 @@
 // Builds:
 //   • AgentSOARKit — embeddable library (auth, streaming, AG-UI parsing)
 //   • AgentSOARKitTests — unit tests for the parser and SSE reader
+//
+// Apple-only: depends on CryptoKit and Security. `swift test` runs on macOS;
+// the full app requires Xcode + iOS 16.
 
 import PackageDescription
 

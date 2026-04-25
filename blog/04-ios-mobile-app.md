@@ -218,8 +218,8 @@ open Package.swift   # or follow mobile/ios/README.md to scaffold the Xcode app
 swift test
 ```
 
-The unit tests run on macOS or Linux without simulators. The full app needs
-Xcode 15 and an iOS 16+ device.
+The unit tests run on macOS without simulators. The full app needs Xcode 15
+and an iOS 16+ device.
 
 Next up: wiring push notifications into the GuardDuty pipeline so the agent
 can wake your phone.
